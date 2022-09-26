@@ -1,0 +1,18 @@
+{
+  "name": "demo-app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@meteor/mongo": "file:packages/mongo",
+    "fibers": "git+https://github.com/znewsham/node-fibers.git#0b41197a766e8c1ea4834b561f70616fc4997ba6",
+    "meteor": "file:meteor",
+    "meteor-promise": "file:../../meteor/npm-packages/meteor-promise"
+  },
+  "type": "module"
+}

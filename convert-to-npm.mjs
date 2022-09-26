@@ -283,7 +283,7 @@ async function convertPackage(folder, outputParentFolder) {
               const packages = !Array.isArray(packageOrPackages) ? [packageOrPackages] : packageOrPackages;
               if (!folder.endsWith('/meteor')) {
                 // TODO: hack - figure out how to deal with the global problem. In Meteor we need the global to be a package global, everywhere else we need it to be actually global (unless it's imported from meteor)
-                packageJson.dependencies['@meteor/meteor'] = `file://${path.resolve(path.join("./packages", "meteor"))}`;
+                packageJson.dependencies['@meteor/meteor'] = `file://${path.resolve(path.join(outputParentFolder, "meteor"))}`;
               }
               let archs = [];
               let opts;
@@ -298,6 +298,7 @@ async function convertPackage(folder, outputParentFolder) {
               }
               let deps = packageJson.dependencies;
               if (opts?.unordered) {
+                // TODO: I think this is a problem with the local file install.
                 deps = packageJson.peerDependencies;
               }
               packages.forEach((dep) => {
@@ -306,12 +307,14 @@ async function convertPackage(folder, outputParentFolder) {
                   return;
                 }
                 allPackages.add(name);
-                deps[`@meteor/${name}`] = version || `file://${path.resolve(path.join("./packages", name))}`;
-                if (!archs?.length || archs.includes('server')) {
-                  serverJsImports.add(`@meteor/${name}`);
-                }
-                if (!archs?.length || archs.includes('client')) {
-                  clientJsImports.add(`@meteor/${name}`);
+                deps[`@meteor/${name}`] = version || `file://${path.resolve(path.join(outputParentFolder, name))}`;
+                if (!opts?.unordered) {
+                  if (!archs?.length || archs.includes('server')) {
+                    serverJsImports.add(`@meteor/${name}`);
+                  }
+                  if (!archs?.length || archs.includes('client')) {
+                    clientJsImports.add(`@meteor/${name}`);
+                  }
                 }
                 // TODO: weak/other opts
               });
@@ -326,15 +329,15 @@ async function convertPackage(folder, outputParentFolder) {
                   return;
                 }
                 // allPackages.add(name);
-                // packageJson.dependencies[`@meteor/${name}`] = version || `file://${path.resolve(path.join("./packages", name))}`;
-                if (!archs?.length || archs.includes('server')) {
+                // packageJson.dependencies[`@meteor/${name}`] = version || `file://${path.resolve(path.join(outputParentFolder, name))}`;
+                /*if (!archs?.length || archs.includes('server')) {
                   serverJsImports.add(`@meteor/${name}`);
                   impliedServerPackages.add(name);
                 }
                 if (!archs?.length || archs.includes('client')) {
                   clientJsImports.add(`@meteor/${name}`);
                   impliedClientPackages.add(name);
-                }
+                }*/
               });
             },
             addFiles(fileOrFiles, archOrArchs) {
