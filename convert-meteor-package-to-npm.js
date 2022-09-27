@@ -6,6 +6,11 @@ import { getPackageGlobals, replaceGlobalsInFile, globalStaticImports } from './
 import packageJsContext from './helpers/package-js-context.js';
 import { getExportStr } from './helpers/content.js';
 
+const commonJS = new Set([
+  'jquery',
+  'underscore'
+]);
+
 const excludes = new Set([
   'ecmascript',
   'modules',
@@ -13,6 +18,17 @@ const excludes = new Set([
   'ecmascript-runtime-client', // TODO
 ]);
 const packageMap = new Map();
+
+function getImportStr(importsSet, isCommon) {
+  if (isCommon) {
+    return Array.from(importsSet).map(imp => `require("${imp}");`).join('\n');
+  }
+  else {
+    return Array.from(importsSet).map(imp => `import "${imp}";`).join('\n');
+  }
+}
+
+const meteorVersionPlaceholderSymbol = Symbol('meteor-version-placeholder');
 
 class MeteorPackage {
   #folderName;
@@ -30,6 +46,7 @@ class MeteorPackage {
   #impliedClientPackages = new Set();
   #impliedServerPackages = new Set();
   #allPackages = new Set();
+  #imports = {};
   #serverMainModule;
   #clientMainModule;
 
@@ -41,6 +58,10 @@ class MeteorPackage {
 
   get folderName() {
     return this.#folderName;
+  }
+
+  isCommon() {
+    return commonJS.has(this.#meteorName);
   }
 
   setBasic({ name, description, version }) {
@@ -77,8 +98,14 @@ class MeteorPackage {
   addMeteorDependencies(packages, archs, opts) {
     if (this.#nodeName !== '@meteor/meteor') {
       // TODO: hack - figure out how to deal with the global problem. In Meteor we need the global to be a package global, everywhere else we need it to be actually global (unless it's imported from meteor)
-      this.#dependencies['@meteor/meteor'] = `file`;
+      this.#dependencies['@meteor/meteor'] = meteorVersionPlaceholderSymbol;
       this.#allPackages.add('meteor');
+
+      // why does this condition need to be here and not above? It seems like all packages (e.g., underscore) need the `allPackages` and `dependencies` set,
+      // but common mustn't import.
+      if (!this.isCommon()) {
+        this.addImport(`@meteor/meteor`, ['client', 'server']);
+      }
     }
     let deps = this.#dependencies;
     if (opts?.unordered) {
@@ -91,7 +118,8 @@ class MeteorPackage {
         return;
       }
       this.#allPackages.add(name);
-      deps[`@meteor/${name}`] = version || `file`;
+      // we should probably NEVER use version, since we can't do resolution the way we want (at least until all versions are published to npm)
+      deps[`@meteor/${name}`] = meteorVersionPlaceholderSymbol;
       if (!opts?.unordered) {
         this.addImport(`@meteor/${name}`, archs);
       }
@@ -105,17 +133,18 @@ class MeteorPackage {
       if (excludes.has(name)) {
         return;
       }
-      // TODO
-      // allPackages.add(name);
-      // packageJson.dependencies[`@meteor/${name}`] = version || `file://${path.resolve(path.join(outputParentFolder, name))}`;
-      /*if (!archs?.length || archs.includes('server')) {
-        serverJsImports.add(`@meteor/${name}`);
-        impliedServerPackages.add(name);
+      this.#allPackages.add(name);
+
+      // we should probably NEVER use version, since we can't do resolution the way we want (at least until all versions are published to npm)
+      this.#dependencies[`@meteor/${name}`] = meteorVersionPlaceholderSymbol;
+      if (!archs?.length || archs.includes('server')) {
+        this.#serverJsImports.add(`@meteor/${name}`);
+        this.#impliedServerPackages.add(`@meteor/${name}`);
       }
       if (!archs?.length || archs.includes('client')) {
-        clientJsImports.add(`@meteor/${name}`);
-        impliedClientPackages.add(name);
-      }*/
+        this.#clientJsImports.add(`@meteor/${name}`);
+        this.#impliedClientPackages.add(`@meteor/${name}`);
+      }
     });
   }
 
@@ -129,11 +158,17 @@ class MeteorPackage {
   }
 
   toJSON() {
+    const newDependencies = Object.fromEntries(Object.entries(this.#dependencies).map(([name, version]) => {
+      if (version === meteorVersionPlaceholderSymbol) {
+        return [name, packageMap.get(name.replace("@meteor/", "")).#version];
+      }
+      return [name, version];
+    }));
     return {
       name: this.#nodeName,
       version: this.#version,
       description: this.#description,
-      dependencies: this.#dependencies,
+      dependencies: newDependencies,
       peerDependencies: this.#peerDependencies,
       exports: {
         '.': {
@@ -142,11 +177,12 @@ class MeteorPackage {
         },
         './*': './*'
       },
+      imports: this.#imports,
       exportedVars: {
         server: this.#serverJsExports,
         client: this.#clientJsExports
       },
-      type: 'module',
+      type: commonJS.has(this.#meteorName) ? 'commonjs' : 'module',
       implies: {
         client: Array.from(this.#impliedClientPackages),
         server: Array.from(this.#impliedServerPackages)
@@ -206,35 +242,70 @@ class MeteorPackage {
         outputFolder,
         { filter(src) { return !src.includes(".npm"); } }
       );
-      const globalsByFile = await getPackageGlobals(outputFolder);
+      const globalsByFile = await getPackageGlobals(outputFolder, commonJS.has(this.#meteorName));
       const allGlobals = new Set(Array.from(globalsByFile.values()).flatMap(v => Array.from(v)));
       const importedGlobals = this.getImportedGlobalsMap(allGlobals);
       const packageGlobals = Array.from(allGlobals).filter(global => !importedGlobals.has(global));
       
       
       globalsByFile.forEach((globals, file) => {
-        replaceGlobalsInFile(outputParentFolder, globals, file, importedGlobals);
+        replaceGlobalsInFile(outputParentFolder, globals, file, importedGlobals, this.isCommon(), name => packageMap.get(name));
       });
 
 
       if (packageGlobals.length || this.#serverJsExports.length || this.#clientJsExports.length) {
-        const exportNames = Array.from(new Set([
+        const exportNamesSet = new Set([
           ...this.#serverJsExports,
           ...this.#clientJsExports,
           ...packageGlobals
-        ]));
-        await fsPromises.writeFile(
-          `${outputFolder}/__globals.js`,
-          [
-            'import module from "node:module";',
-            'export default {',
-            '  ' + exportNames.map(name => `${name}: undefined`).join(',\n') + ',',
-            '  Npm: { require: module.createRequire(import.meta.url) },',
-            '  module: { id: import.meta.url },',
-            '  require: module.createRequire(import.meta.url)',
-            '}'
-          ].join('\n')
-        );
+        ]);
+        
+        const hasRequire = exportNamesSet.has('require');
+        const hasModule = exportNamesSet.has('module');
+        const hasNpm = exportNamesSet.has('Npm');
+        exportNamesSet.delete('require');
+        exportNamesSet.delete('module');
+        exportNamesSet.delete('Npm');
+        if ((hasModule || hasNpm || hasRequire) && !this.isCommon()) {
+          this.#imports['#module'] = {
+            node: './__server_module.js',
+            default: './__client_module.js'
+          };
+          await fsPromises.writeFile(
+            `${outputFolder}/__client_module.js`,
+            `export default {
+              createRequire() {return require}
+            };
+            `
+          )
+          await fsPromises.writeFile(
+            `${outputFolder}/__server_module.js`,
+            "export { default } from 'node:module'"
+          )
+        }
+        if (this.isCommon()) {
+          fsPromises.writeFile(
+            `${outputFolder}/__globals.js`,
+            Array.from(exportNamesSet).map(name => `exports.${name} = undefined;`).join('\n'),
+          );
+        }
+        else {
+          await fsPromises.writeFile(
+            `${outputFolder}/__globals.js`,
+            [
+              ...(hasModule || hasNpm || hasRequire ? ['import module from "#module";'] : []),
+              'export default {',
+              ...(exportNamesSet.size ? ['  ' + Array.from(exportNamesSet).map(name => `${name}: undefined`).join(',\n  ') + ','] : []),
+              ...(hasNpm ? ['  Npm: { require: module.createRequire(import.meta.url) },'] : []),
+              ...(hasModule ? ['  module: { id: import.meta.url },'] : []),
+              ...(hasRequire ? ['  require: module.createRequire(import.meta.url)'] : []),
+              '}'
+            ].join('\n')
+          );
+        }
+      }
+      if (this.#meteorName === 'meteor-base') {
+        console.log(this.#clientJsImports);
       }
       await Promise.all([
         fsPromises.writeFile(
@@ -244,17 +315,25 @@ class MeteorPackage {
         fsPromises.writeFile(
           `${outputFolder}/__server.js`, 
           [
-            ...Array.from(this.#serverJsImports).map(imp => `import "${imp}";`),
-            ...!this.#serverMainModule && this.#serverJsExports.length ? [getExportStr('server', this.#serverJsExports, this.#serverJsImports, name => packageMap.get(name))] : [],
-            ...this.#serverMainModule ? [`export * from "${this.#serverMainModule}";`] : []
+            getImportStr(this.#serverJsImports, commonJS.has(this.#meteorName)),
+            ...!this.#serverMainModule ? [getExportStr(this.#meteorName, 'server', this.#serverJsExports, this.#serverJsImports, commonJS.has(this.#meteorName), name => packageMap.get(name))] : [],
+            ...(this.#serverMainModule ? [
+              `import * as __package__ from "${this.#serverMainModule}";`,
+              `Package["${this.#meteorName}"] = __package__;`,
+              `export * from "${this.#serverMainModule}";`
+            ] : [])
           ].join('\n')
         ),
         fsPromises.writeFile(
           `${outputFolder}/__client.js`,
           [
-            ...Array.from(this.#serverJsImports).map(imp => `import "${imp}";`),
-            ...!this.#clientMainModule && this.#clientJsExports.length ? [getExportStr('client', this.#clientJsExports, this.#clientJsImports, name => packageMap.get(name))] : [],
-            ...this.#clientMainModule ? [`export * from "${this.#clientMainModule}";`] : []
+            getImportStr(this.#clientJsImports, commonJS.has(this.#meteorName)),
+            ...!this.#clientMainModule ? [getExportStr(this.#meteorName, 'client', this.#clientJsExports, this.#clientJsImports, commonJS.has(this.#meteorName), name => packageMap.get(name))] : [],
+            ...(this.#clientMainModule ? [
+              `import * as __package__ from "${this.#clientMainModule}";`,
+              `Package["${this.#meteorName}"] = __package__;`,
+              `export * from "${this.#clientMainModule}";`
+            ] : [])
           ].join('\n')
         )
       ]);
@@ -262,12 +341,13 @@ class MeteorPackage {
     catch (error) {
       console.log(this.#meteorName || this.#folderName, outputParentFolder);
       console.error(error);
+      throw error;
     }
   }
 
-  async loadFromMeteorPackage(pathToMeteorInstall) {
+  async loadFromMeteorPackage(pathToMeteorInstall, ...otherPaths) {
     try {
-      const packageJsPath = this.findPackageJs(pathToMeteorInstall);
+      const packageJsPath = this.findPackageJs(pathToMeteorInstall, ...otherPaths);
       const script = new vm.Script((await fsPromises.readFile(packageJsPath)).toString());
       const context = packageJsContext(this);
       script.runInNewContext(context);
@@ -277,6 +357,7 @@ class MeteorPackage {
       this.#waitingWrite = (await Promise.all(Array.from(this.#allPackages).map(packageName => MeteorPackage.ensurePackage(
         packageName,
         pathToMeteorInstall,
+        ...otherPaths
       )))).filter(Boolean);
 
       // next, find all the direct dependencies and see what they imply. Then add those to our dependencies
@@ -288,13 +369,14 @@ class MeteorPackage {
       });
     }
     catch (error) {
-      console.log(this.#meteorName || this.#folderName, outputParentFolder);
+      console.log(this.#meteorName || this.#folderName);
       console.error(error);
+      throw error;
     }
   }
   
-  async convert(outputParentFolder, pathToMeteorInstall) {
-    await this.loadFromMeteorPackage(pathToMeteorInstall);
+  async convert(outputParentFolder, pathToMeteorInstall, ...packagesPaths) {
+    await this.loadFromMeteorPackage(pathToMeteorInstall, ...packagesPaths);
     await this.writeToNpmModule(outputParentFolder);
   }
 
@@ -307,6 +389,9 @@ class MeteorPackage {
         return true;
       }
     });
+    if (!folder) {
+      throw new Error(`package ${this.#folderName} not found`);
+    }
     return path.join(folder, this.#folderName, 'package.js');
   }
 
@@ -329,13 +414,13 @@ class MeteorPackage {
   }
 }
 
-async function convertPackage(folderName, meteorInstall, outputParentFolder) {
+async function convertPackage(folderName, outputParentFolder, meteorInstall, ...otherPackageFolders) {
   const meteorPackage = new MeteorPackage(folderName);
-  await meteorPackage.convert(outputParentFolder, meteorInstall);
+  await meteorPackage.convert(outputParentFolder, meteorInstall, ...otherPackageFolders);
 }
 
 convertPackage(
   process.argv[2],
-  process.argv[3].replace(/\/$/, ""),
-  process.argv[4]
+  process.argv[3],
+  ...process.argv.slice(4).map(v => v.replace(/\/$/, ""))
 ).catch(console.error);

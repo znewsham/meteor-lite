@@ -70,7 +70,8 @@ export default function packageJsContext(meteorPackage) {
           addFiles(fileOrFiles, archOrArchs) {
             const files = !Array.isArray(fileOrFiles) ? [fileOrFiles] : fileOrFiles;
             let archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
-            files.forEach((file) => {
+            // TODO: enable css, html, etc
+            files.filter(file => file.endsWith('.js')).forEach((file) => {
               meteorPackage.addImport(`./${file}`, archs);
             });
           },
