@@ -1,4 +1,6 @@
 node_modules
 demo-app/node_modules
 demo-app/packages/*
-demo-app/web.browser/packages*
+demo-app/web.browser/app*
+todo
+
