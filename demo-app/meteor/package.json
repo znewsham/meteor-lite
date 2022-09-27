@@ -3,7 +3,11 @@
   "type": "module",
   "version": "0.0.1",
   "exports": {
+    "./ddp-common/utils.js": "./@meteor/ddp-common/utils.js",
     "./*.js": "./@meteor/*.js",
-    "./*": "./@meteor/*/__server.js"
+    "./*": {
+      "node": "./@meteor/*/__server.js",
+      "default": "./@meteor/*/__client.js"
+    }
   }
 }
