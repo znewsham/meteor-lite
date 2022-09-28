@@ -8,7 +8,7 @@ import fsPromises from 'fs/promises';
 import { windowGlobals } from './window-globals.js';
 
 const acornOptions = {
-  ecmaVersion: 2020,
+  ecmaVersion: 2022,
   sourceType: 'module',
   allowImportExportEverywhere: true,
   allowAwaitOutsideFunction: true
@@ -26,7 +26,9 @@ const excludeFindImports = new Set([
   '__server.js',
   '__globals.js',
   '__client_module.js',
-  '__server_module.js'
+  '__server_module.js',
+  '__client_assets.js',
+  '__server_assets.js'
 ]);
 
 
@@ -90,13 +92,11 @@ export async function replaceGlobalsInFile(outputParentFolder, globals, file, im
       // if this is a common JS module, we don't allow import of @meteor/meteor (hopefully just required for the global)
       // if you're importing something else...we're gonna have to fix by hand.
       if (isCommon) {
-        if (from === '@meteor/meteor' && imports.has('global') && imports.size === 1) {
-          return `const { ${Array.from(imports).join(', ')} } = require("${from}/global.cjs");`
-        }
-        else if (packageGetter(meteorName).isCommon()) {
+        if (packageGetter(meteorName).isCommon()) {
           return `const { ${Array.from(imports).join(', ')} } = require("${from}");`
         }
         else {
+          return `const { ${Array.from(imports).join(', ')} } = require("${from}");`
           throw new Error(`Can't import ESM meteor package ${from} from commonjs meteor package ${file}`);
         }
       }
@@ -148,34 +148,41 @@ async function getFileList(dirName) {
 }
 
 async function getGlobals(file, map, isCommon) {
-  const ast = acorn.parse(
-    (await fsPromises.readFile(file)).toString(),
-    acornOptions
-  );
-  const scopeManager = analyzeScope(ast, {
-    ecmaVersion: 6,
-    sourceType: "module",
-    ignoreEval: true,
-    // Ensures we don't treat top-level var declarations as globals.
-    nodejsScope: true,
-  });
-  const currentScope = scopeManager.acquire(ast);
-  const all = new Set([
-    ...currentScope.implicit.variables.map(entry => entry.identifier.name), 
-    ...currentScope.implicit.left.filter(entry => entry.identifier &&
-      entry.identifier.type === "Identifier").map(entry => entry.identifier.name)
-  ].filter(name => {
-    if (globalBlacklist.has(name)) {
-      return false;
-    }
-    if (isCommon && commonJSBlacklist.has(name)) {
-      return false;
+  try {
+    const ast = acorn.parse(
+      (await fsPromises.readFile(file)).toString(),
+      acornOptions
+    );
+    const scopeManager = analyzeScope(ast, {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      ignoreEval: true,
+      // Ensures we don't treat top-level var declarations as globals.
+      nodejsScope: true,
+    });
+    const currentScope = scopeManager.acquire(ast);
+    const all = new Set([
+      ...currentScope.implicit.variables.map(entry => entry.identifier.name), 
+      ...currentScope.implicit.left.filter(entry => entry.identifier &&
+        entry.from.type !== 'class' && 
+        entry.identifier.type === "Identifier").map(entry => entry.identifier.name)
+    ].filter(name => {
+      if (globalBlacklist.has(name)) {
+        return false;
+      }
+      if (isCommon && commonJSBlacklist.has(name)) {
+        return false;
+      } 
+      return true;
+    }));
+    if (all.size) {
+      map.set(file, all);
     } 
-    return true;
-  }));
-  if (all.size) {
-    map.set(file, all);
-  } 
+  }
+  catch (e) {
+    console.log('problem with file', file);
+    throw e;
+  }
 }
 
 export async function getPackageGlobals(folder, isCommon) {
@@ -224,6 +231,7 @@ export function rewriteFileForPackageGlobals(contents, packageGlobalsSet) {
         && parent.type !== 'VariableDeclarator'
         && (parent.type !== 'MemberExpression' || parent.object === node)
         && parent.type !== 'Property'
+        && parent.type !== 'PropertyDefinition'
         && packageGlobalsSet.has(node.name)
         && !currentScope.set.has(node.name)
         && !currentScope.through.find(ref => ref.resolved?.name === node.name)
@@ -241,5 +249,11 @@ export function rewriteFileForPackageGlobals(contents, packageGlobalsSet) {
       }
     }
   });
-  return print(ast).code;
+  try {
+    return print(ast).code;
+  }
+  catch (error) {
+    debugger;
+    throw error;
+  }
 }

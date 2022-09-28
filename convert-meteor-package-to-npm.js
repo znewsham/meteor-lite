@@ -49,6 +49,8 @@ class MeteorPackage {
   #imports = {};
   #serverMainModule;
   #clientMainModule;
+  #clientAssets = new Array();
+  #serverAssets = new Array();
 
   #waitingWrite = [];
 
@@ -93,6 +95,17 @@ class MeteorPackage {
     if (!archs?.length || archs.includes('client')) {
       this.#clientJsImports.add(item);
     }
+  }
+
+  addAssets(files, archs) {
+    files.forEach((file) => {
+      if (!archs?.length || archs.includes("client")) {
+        this.#clientAssets.push(file);
+      }
+      if (!archs?.length || archs.includes("server")) {
+        this.#serverAssets.push(file);
+      }
+    });
   }
 
   addMeteorDependencies(packages, archs, opts) {
@@ -172,8 +185,14 @@ class MeteorPackage {
       peerDependencies: this.#peerDependencies,
       exports: {
         '.': {
-          node: './__server.js',
-          default: './__client.js'
+          node: {
+            import: './__server.js',
+            require: !commonJS.has(this.#meteorName) ? './__server.cjs' : undefined
+          },
+          default: {
+            import: './__client.js',
+            require: !commonJS.has(this.#meteorName) ? './__client.cjs' : undefined
+          }
         },
         './*': './*'
       },
@@ -181,6 +200,10 @@ class MeteorPackage {
       exportedVars: {
         server: this.#serverJsExports,
         client: this.#clientJsExports
+      },
+      assets: {
+        client: this.#clientAssets,
+        server: this.#serverAssets
       },
       type: commonJS.has(this.#meteorName) ? 'commonjs' : 'module',
       implies: {
@@ -261,11 +284,44 @@ class MeteorPackage {
         ]);
         
         const hasRequire = exportNamesSet.has('require');
+        const hasExports = exportNamesSet.has('exports');
         const hasModule = exportNamesSet.has('module');
         const hasNpm = exportNamesSet.has('Npm');
+        const hasAssets = exportNamesSet.has('Assets');
         exportNamesSet.delete('require');
         exportNamesSet.delete('module');
         exportNamesSet.delete('Npm');
+        exportNamesSet.delete('Assets');
+        if (hasAssets) {
+          this.#imports['#assets'] = {
+            node: './__server_assets.js',
+            default: './__client_assets.js'
+          };
+          await Promise.all([
+            fs.writeFile(
+              `${outputFolder}/__client_assets.js`,
+              'export default {}'
+            ),
+            fs.writeFile(
+              `${outputFolder}/__server_assets.js`,
+              [
+                'import fs from \'fs\';',
+                'import fsPromises from \'fs/promises\';',
+                'import Fiber from \'fibers\';',
+                'import path from \'path\';',
+                'const basePath = path.dirname(import.meta.url).replace(\'file:\', \'\')',
+                'export default {',
+                '  getText(file) {',
+                '    return Fiber.current ? Promise.await(fsPromises.readFile(path.join(basePath, file))).toString() : fs.readFileSync(path.join(basePath, file)).toString();',
+                '  }',
+                '};'
+              ].join('\n')
+            )
+          ])
+        }
+        if ((hasRequire || hasExports) && this.#serverMainModule) {
+          console.warn(`esm module ${this.#meteorName} using exports or require, this probably wont work`);
+        }
         if ((hasModule || hasNpm || hasRequire) && !this.isCommon()) {
           this.#imports['#module'] = {
             node: './__server_module.js',
@@ -284,9 +340,10 @@ class MeteorPackage {
           )
         }
         if (this.isCommon()) {
-          fsPromises.writeFile(
+          await fsPromises.writeFile(
             `${outputFolder}/__globals.js`,
-            Array.from(exportNamesSet).map(name => `exports.${name} = undefined;`).join('\n'),
+            // TODO support assets for cjs
+            Array.from(exportNamesSet).map(name => `module.exports.${name} = undefined;`).join('\n'),
           );
         }
         else {
@@ -294,11 +351,13 @@ class MeteorPackage {
             `${outputFolder}/__globals.js`,
             [
               ...(hasModule || hasNpm || hasRequire ? ['import module from "#module";'] : []),
+              ...hasAssets ? ['import Assets from \'#assets\''] : [],
               'export default {',
               ...(exportNamesSet.size ? ['  ' + Array.from(exportNamesSet).map(name => `${name}: undefined`).join(',\n  ') + ','] : []),
               ...(hasNpm ? ['  Npm: { require: module.createRequire(import.meta.url) },'] : []),
               ...(hasModule ? ['  module: { id: import.meta.url },'] : []),
-              ...(hasRequire ? ['  require: module.createRequire(import.meta.url)'] : []),
+              ...(hasRequire ? ['  require: module.createRequire(import.meta.url),'] : []),
+              ...(hasAssets ? ['Assets'] : []),
               '}'
             ].join('\n')
           );
@@ -306,6 +365,16 @@ class MeteorPackage {
       }
       if (this.#meteorName === 'meteor-base') {
         console.log(this.#clientJsImports);
+      }
+      if (!this.isCommon()) {
+        fsPromises.writeFile(
+          `${outputFolder}/__server.cjs`, 
+          `module.exports = Package["${this.#meteorName}"];`
+        );
+        fsPromises.writeFile(
+          `${outputFolder}/__client.cjs`, 
+          `module.exports = Package["${this.#meteorName}"];`
+        );
       }
       await Promise.all([
         fsPromises.writeFile(
@@ -319,7 +388,7 @@ class MeteorPackage {
             ...!this.#serverMainModule ? [getExportStr(this.#meteorName, 'server', this.#serverJsExports, this.#serverJsImports, commonJS.has(this.#meteorName), name => packageMap.get(name))] : [],
             ...(this.#serverMainModule ? [
               `import * as __package__ from "${this.#serverMainModule}";`,
-              `Package["${this.#meteorName}"] = __package__;`,
+              `Package._define("${this.#meteorName}", __package__);`,
               `export * from "${this.#serverMainModule}";`
             ] : [])
           ].join('\n')
@@ -331,7 +400,7 @@ class MeteorPackage {
             ...!this.#clientMainModule ? [getExportStr(this.#meteorName, 'client', this.#clientJsExports, this.#clientJsImports, commonJS.has(this.#meteorName), name => packageMap.get(name))] : [],
             ...(this.#clientMainModule ? [
               `import * as __package__ from "${this.#clientMainModule}";`,
-              `Package["${this.#meteorName}"] = __package__;`,
+              `Package._define("${this.#meteorName}", __package__);`,
               `export * from "${this.#clientMainModule}";`
             ] : [])
           ].join('\n')

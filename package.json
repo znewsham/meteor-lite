@@ -10,6 +10,8 @@
   "license": "ISC",
   "dependencies": {
     "acorn": "^8.8.0",
+    "commander": "^9.4.0",
+    "esbuild": "^0.15.9",
     "escope": "^3.6.0",
     "eslint": "^8.24.0",
     "estree-walker": "^3.0.1",

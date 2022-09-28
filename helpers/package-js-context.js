@@ -47,6 +47,11 @@ export default function packageJsContext(meteorPackage) {
             const symbols = !Array.isArray(symbol) ? [symbol] : symbol;
             meteorPackage.addExports(symbols, archs, opts);
           },
+          addAssets(fileOrFiles, archOrArchs) {
+            const files = !Array.isArray(fileOrFiles) ? [fileOrFiles] : fileOrFiles;
+            let archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
+            meteorPackage.addAssets(files, archs);
+          },
           use(packageOrPackages, archOrArchs, maybeOpts) {
             const packages = !Array.isArray(packageOrPackages) ? [packageOrPackages] : packageOrPackages;
             let archs = [];
