@@ -1,4 +1,9 @@
 
+# Proof of concept
+1. Ensure you're on linux
+2. Ensure you're on node 14.20.0 (or thereabouts)
+3. Run the below to get started (no OTF rebuilds, kill and reup when you want)
+
 ```bash
 git clone https://github.com/znewsham/meteor-to-node
 git clone --branch make-compatible https://github.com/znewsham/blaze
