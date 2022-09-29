@@ -78,7 +78,7 @@ export async function replaceGlobalsInFile(outputParentFolder, globals, file, im
     const fileContents = (await fsPromises.readFile(file)).toString();
     const importStr = Array.from(imports.entries()).map(([from, imports], i) => {
       if (from === '__globals.js') {
-        const relative = file.replace(outputParentFolder.replace("./", ""), "").split('/').slice(2).map(a => '..').join('/');
+        const relative = path.resolve(file).replace(outputParentFolder, "").split('/').slice(3).map(a => '..').join('/');
         from = `./${relative}${relative && '/'}__globals.js`;
         if (isCommon) {
           return `const __package_globals__ = require("${from}");`

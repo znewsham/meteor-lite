@@ -1,0 +1,42 @@
+{
+  "name": "npm-meteor-converter",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "node --experimental-specifier-resolution=node ./runner.js convert-packages -d ../../meteor/packages ../../blaze/packages/ -o ./packages -p blaze && npm install packages/* --save-optional",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "acorn": "^8.8.0",
+    "commander": "^9.4.0",
+    "esbuild": "^0.15.9",
+    "escope": "^3.6.0",
+    "eslint": "^8.24.0",
+    "estree-walker": "^3.0.1",
+    "fibers": "git+https://github.com/znewsham/node-fibers.git#0b41197a766e8c1ea4834b561f70616fc4997ba6",
+    "fs-extra": "^10.1.0",
+    "meteor": "file:meteor",
+    "meteor-promise": "file:../../meteor/npm-packages/meteor-promise",
+    "recast": "^0.21.2"
+  },
+  "type": "module",
+  "optionalDependencies": {
+    "@meteor/base64": "file:packages/base64",
+    "@meteor/blaze": "file:packages/blaze",
+    "@meteor/check": "file:packages/check",
+    "@meteor/diff-sequence": "file:packages/diff-sequence",
+    "@meteor/ejson": "file:packages/ejson",
+    "@meteor/htmljs": "file:packages/htmljs",
+    "@meteor/jquery": "file:packages/jquery",
+    "@meteor/meteor": "file:packages/meteor",
+    "@meteor/mongo-id": "file:packages/mongo-id",
+    "@meteor/observe-sequence": "file:packages/observe-sequence",
+    "@meteor/ordered-dict": "file:packages/ordered-dict",
+    "@meteor/random": "file:packages/random",
+    "@meteor/reactive-var": "file:packages/reactive-var",
+    "@meteor/tracker": "file:packages/tracker"
+  }
+}

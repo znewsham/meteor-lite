@@ -13,11 +13,17 @@ const commonJS = new Set([
 
 const excludes = new Set([
   'ecmascript',
+  'typescript',
   'modules',
   'isobuild:compiler-plugin',
-  'ecmascript-runtime-client', // TODO
+  'isobuild:dynamic-import', // TODO?
+  'ecmascript-runtime-client', // TODO?
+  'isobuild:minifier-plugin',
+  'standard-minifier-css',
+  'standard-minifier-js',
+  'hot-module-replacement' // this has a strong dependency on modules
 ]);
-const packageMap = new Map();
+export const packageMap = new Map();
 
 function getImportStr(importsSet, isCommon) {
   if (isCommon) {
@@ -78,7 +84,7 @@ class MeteorPackage {
       if (!opts?.testOnly && !archs?.length || archs.includes('server')) {
         this.#serverJsExports.push(symbol);
       }
-      if (!opts?.testOnly && !archs?.length || archs.includes('client')) {
+      if (!opts?.testOnly && !archs?.length || archs.includes('client') || archs.includes('web') || archs.includes('web.browser')) {
         this.#clientJsExports.push(symbol);
       }
     });
@@ -92,14 +98,14 @@ class MeteorPackage {
     if (!archs?.length || archs.includes('server')) {
       this.#serverJsImports.add(item);
     }
-    if (!archs?.length || archs.includes('client')) {
+    if (!archs?.length || archs.includes('client') || archs.includes('web') || archs.includes('web.browser')) {
       this.#clientJsImports.add(item);
     }
   }
 
   addAssets(files, archs) {
     files.forEach((file) => {
-      if (!archs?.length || archs.includes("client")) {
+      if (!archs?.length || archs.includes("client") || archs.includes('web') || archs.includes('web.browser')) {
         this.#clientAssets.push(file);
       }
       if (!archs?.length || archs.includes("server")) {
@@ -363,9 +369,6 @@ class MeteorPackage {
           );
         }
       }
-      if (this.#meteorName === 'meteor-base') {
-        console.log(this.#clientJsImports);
-      }
       if (!this.isCommon()) {
         fsPromises.writeFile(
           `${outputFolder}/__server.cjs`, 
@@ -483,13 +486,20 @@ class MeteorPackage {
   }
 }
 
-async function convertPackage(folderName, outputParentFolder, meteorInstall, ...otherPackageFolders) {
+// TODO: we're overloading name here.
+export async function convertPackage(folderName, outputParentFolder, meteorInstall, ...otherPackageFolders) {
+  outputParentFolder = path.resolve(outputParentFolder);
+  if (excludes.has(folderName) || packageMap.has(folderName)) {
+    return;
+  }
   const meteorPackage = new MeteorPackage(folderName);
+  packageMap.set(folderName, meteorPackage);
   await meteorPackage.convert(outputParentFolder, meteorInstall, ...otherPackageFolders);
 }
 
-convertPackage(
+/*convertPackage(
   process.argv[2],
   process.argv[3],
   ...process.argv.slice(4).map(v => v.replace(/\/$/, ""))
 ).catch(console.error);
+*/

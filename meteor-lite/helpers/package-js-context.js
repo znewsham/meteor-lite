@@ -1,5 +1,3 @@
-import path from 'path';
-
 export default function packageJsContext(meteorPackage) {
   return {
     Cordova: {
@@ -75,8 +73,7 @@ export default function packageJsContext(meteorPackage) {
           addFiles(fileOrFiles, archOrArchs) {
             const files = !Array.isArray(fileOrFiles) ? [fileOrFiles] : fileOrFiles;
             let archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
-            // TODO: enable css, html, etc
-            files.filter(file => file.endsWith('.js')).forEach((file) => {
+            files.forEach((file) => {
               meteorPackage.addImport(`./${file}`, archs);
             });
           },

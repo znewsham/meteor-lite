@@ -5,6 +5,25 @@ import fsExtra from 'fs-extra';
 export const baseFolder = './.meteor';
 export const baseBuildFolder = `${baseFolder}/local`;
 
+
+async function getPackageExports(packageName, clientOrServer, map) {
+  if (!map.has(packageName)) {
+    map.set(packageName, new Set());
+  }
+  const packageJson = JSON.parse((await fs.readFile(`./packages/${packageName.replace("@meteor/", "")}/package.json`)).toString());
+  if (packageJson.implies[clientOrServer]?.length) {
+    await Promise.all(packageJson.implies[clientOrServer].map(packageName => getPackageExports(packageName, clientOrServer, map)));
+  }
+  (packageJson.exportedVars?.[clientOrServer] || []).forEach((name) => map.get(packageName).add(name));
+}
+
+export async function generateGlobals(packages, clientOrServer) {
+  const map = new Map();
+  const meteorPackages = packages;
+  await Promise.all(meteorPackages.map(packageName => getPackageExports(packageName, clientOrServer, map)));
+  return map;
+}
+
 export async function readPackageJson() {
   return JSON.parse((await fs.readFile('./package.json')).toString());
 }
