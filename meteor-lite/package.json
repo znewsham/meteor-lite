@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "postinstall": "node --experimental-specifier-resolution=node ./runner.js convert-packages -d ../../meteor/packages ../../blaze/packages/ -o ./packages -p blaze && npm install packages/* --save-optional",
+    "postinstall": "node --experimental-specifier-resolution=node ./runner.js convert-packages -d ../../meteor/packages ../../blaze/packages/ -o ./packages -p blaze templating-tools && npm install packages/* --save-optional",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
@@ -26,9 +26,11 @@
   "optionalDependencies": {
     "@meteor/base64": "file:packages/base64",
     "@meteor/blaze": "file:packages/blaze",
+    "@meteor/blaze-tools": "file:packages/blaze-tools",
     "@meteor/check": "file:packages/check",
     "@meteor/diff-sequence": "file:packages/diff-sequence",
     "@meteor/ejson": "file:packages/ejson",
+    "@meteor/html-tools": "file:packages/html-tools",
     "@meteor/htmljs": "file:packages/htmljs",
     "@meteor/jquery": "file:packages/jquery",
     "@meteor/meteor": "file:packages/meteor",
@@ -37,6 +39,8 @@
     "@meteor/ordered-dict": "file:packages/ordered-dict",
     "@meteor/random": "file:packages/random",
     "@meteor/reactive-var": "file:packages/reactive-var",
+    "@meteor/spacebars-compiler": "file:packages/spacebars-compiler",
+    "@meteor/templating-tools": "file:packages/templating-tools",
     "@meteor/tracker": "file:packages/tracker"
   }
 }

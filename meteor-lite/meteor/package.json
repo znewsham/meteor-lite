@@ -2,6 +2,9 @@
   "name": "meteor",
   "type": "module",
   "version": "0.0.1",
+  "scripts": {
+    "preinstall": "rm @meteor || ln -s $(realpath ../packages) @meteor"
+  },
   "exports": {
     "./ddp-common/utils.js": "./@meteor/ddp-common/utils.js",
     "./*.js": "./@meteor/*.js",
