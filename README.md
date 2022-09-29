@@ -1,5 +1,10 @@
-./install.sh
 
-./node_modules/.bin/esbuild --bundle client.js --outfile=web.browser/app.js --define:Meteor.isServer=false --define:__package_globals.require=require --sourcemap
+git clone https://github.com/znewsham/meteor-to-node
+git clone --branch make-compatible https://github.com/znewsham/blaze
+git clone --branch make-compatible https://github.com/znewsham/meteor
 
-PORT=3000 MONGO_URL='mongodb://127.0.0.1:27017/qualia' ROOT_URL='http://localhost:3000' node --experimental-specifier-resolution=node server.js
+cd ./meteor-to-node/meteor-lite && npm install
+cd ../demo-app && npm install && npm install ./meteor #this is a local symlink to make importing meteor/package easier.
+npm start
+
+visit http://localhost:3000 and feast your eyes on your non-meteor meteor app.
