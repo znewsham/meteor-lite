@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"name": "meteor",
+			"path": "../../meteor"
+		},
+		{
+			"name": ".meteor",
+			"path": "../../../../vagrant/share/meteor/.meteor"
+		},
+		{
+			"name": "npm-meteor-converter",
+			"path": ".."
+		}
+	]
+}

@@ -11,16 +11,18 @@
   "license": "ISC",
   "dependencies": {
     "acorn": "^8.8.0",
+    "acorn-loose": "^8.3.0",
+    "astring": "^1.8.3",
     "commander": "^9.4.0",
     "esbuild": "^0.15.9",
     "escope": "^3.6.0",
-    "eslint": "^8.24.0",
     "estree-walker": "^3.0.1",
     "fibers": "git+https://github.com/znewsham/node-fibers.git#0b41197a766e8c1ea4834b561f70616fc4997ba6",
     "fs-extra": "^10.1.0",
     "meteor": "file:meteor",
     "meteor-promise": "file:../../meteor/npm-packages/meteor-promise",
-    "recast": "^0.21.2"
+    "recast": "^0.21.2",
+    "semver": "^7.3.7"
   },
   "type": "module",
   "optionalDependencies": {
@@ -42,5 +44,10 @@
     "@meteor/spacebars-compiler": "file:packages/spacebars-compiler",
     "@meteor/templating-tools": "file:packages/templating-tools",
     "@meteor/tracker": "file:packages/tracker"
+  },
+  "devDependencies": {
+    "eslint": "^8.24.0",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-plugin-import": "^2.26.0"
   }
 }

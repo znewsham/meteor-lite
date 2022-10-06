@@ -1,24 +1,25 @@
 export default function packageJsContext(meteorPackage) {
   return {
+    process: globalThis.process,
     Cordova: {
       depends() {
-        //noop
-      }
+        // noop
+      },
     },
     Npm: {
       strip() {
-        //noop
+        // noop
       },
       depends(deps) {
         meteorPackage.addNpmDeps(deps);
-      }
+      },
     },
     Package: {
       describe(description) {
         meteorPackage.setBasic({
           name: description.name || meteorPackage.folderName,
           description: description.summary,
-          version: description.version
+          version: description.version,
         });
       },
       onTest() {
@@ -29,6 +30,9 @@ export default function packageJsContext(meteorPackage) {
       },
       onUse(cb) {
         cb({
+          versionsFrom() {
+  
+          },
           export(symbol, archOrArchs, maybeOpts) {
             // this is a manual process - will require going into the package.
             let archs = [];
@@ -47,7 +51,7 @@ export default function packageJsContext(meteorPackage) {
           },
           addAssets(fileOrFiles, archOrArchs) {
             const files = !Array.isArray(fileOrFiles) ? [fileOrFiles] : fileOrFiles;
-            let archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
+            const archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
             meteorPackage.addAssets(files, archs);
           },
           use(packageOrPackages, archOrArchs, maybeOpts) {
@@ -67,22 +71,22 @@ export default function packageJsContext(meteorPackage) {
           },
           imply(packageOrPackages, archOrArchs) {
             const packages = !Array.isArray(packageOrPackages) ? [packageOrPackages] : packageOrPackages;
-            let archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
+            const archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
             meteorPackage.addImplies(packages, archs);
           },
           addFiles(fileOrFiles, archOrArchs) {
             const files = !Array.isArray(fileOrFiles) ? [fileOrFiles] : fileOrFiles;
-            let archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
+            const archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
             files.forEach((file) => {
               meteorPackage.addImport(`./${file}`, archs);
             });
           },
           mainModule(file, archOrArchs) {
-            let archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
+            const archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
             meteorPackage.setMainModule(file, archs);
-          }
+          },
         });
-      }
-    }
+      },
+    },
   };
 }

@@ -5,6 +5,6 @@ const basePath = path.join(path.dirname(import.meta.url), 'assets').replace('fil
 
 globalThis.Assets = {
   getText(file) {
-    return Promise.await(fs.readFile(path.join(basePath, file))).toString(); 
-  }
-}
+    return Promise.await(fs.readFile(path.join(basePath, file))).toString();
+  },
+};

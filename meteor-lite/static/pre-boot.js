@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { createHook }  from 'async_hooks';
+import { createHook } from 'async_hooks';
 import Fiber from 'fibers';
 import './assets.js';
 
@@ -9,8 +9,10 @@ const map = {};
 const AsyncHook = createHook({
   init(asyncId, type, triggerAsyncId, resource) {
     map[asyncId] = {
-      type, asyncId,
-      triggerAsyncId, resource
+      type,
+      asyncId,
+      triggerAsyncId,
+      resource,
     };
   },
   // before() is called just before the resource's callback is called. It can be
@@ -46,7 +48,7 @@ const AsyncHook = createHook({
     if (item.type === 'Fiber') {
       debugger;
     }
-  }
+  },
 });
 
 // AsyncHook.enable();
@@ -54,12 +56,11 @@ const AsyncHook = createHook({
 global.__meteor_runtime_config__ = {};
 const serverJsonPath = path.join(path.dirname(import.meta.url), 'config.json').replace('file:', '');
 // var serverJsonPath = path.resolve('./server/config.json');
-var serverDir = path.dirname(serverJsonPath);
-var configJson =
-  JSON.parse(fs.readFileSync(path.resolve(serverDir, 'config.json'), 'utf8'));
+const serverDir = path.dirname(serverJsonPath);
+const configJson = JSON.parse(fs.readFileSync(path.resolve(serverDir, 'config.json'), 'utf8'));
 
 global.__meteor_bootstrap__ = {
   startupHooks: [],
-  serverDir: serverDir,
-  configJson: configJson
+  serverDir,
+  configJson,
 };

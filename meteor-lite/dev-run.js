@@ -6,17 +6,17 @@ export default async function run() {
     [
       '--experimental-specifier-resolution=node',
       '.meteor/local/server/main.js',
-      '.meteor/local/server/config.json'
-    ]
+      '.meteor/local/server/config.json',
+    ],
   );
   node.stdout.on('data', (data) => {
     process.stdout.write(data);
   });
-  
+
   node.stderr.on('data', (data) => {
     process.stderr.write(data);
   });
-  
+
   node.on('close', (code) => {
     process.exit(code);
   });
