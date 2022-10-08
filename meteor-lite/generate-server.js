@@ -9,8 +9,15 @@ const staticPath = path.join(path.dirname(import.meta.url), 'static').replace('f
 
 async function linkAssets() {
   const packageJson = await readPackageJson();
+  const optional = [];
+  if (await fsExtra.pathExists('./private')) {
+    optional.push(fsExtra.ensureSymlink('./private', `${baseBuildFolder}/server/assets`));
+  }
+  if (await fsExtra.pathExists(`${baseBuildFolder}/server/entry.js`)) {
+    await fs.unlink(`${baseBuildFolder}/server/entry.js`);
+  }
   return Promise.all([
-    fsExtra.ensureSymlink('./private', `${baseBuildFolder}/server/assets`),
+    ...optional,
     fs.copyFile(path.join(staticPath, 'pre-boot.js'), `${baseBuildFolder}/server/pre-boot.js`),
     fs.copyFile(path.join(staticPath, 'main.js'), `${baseBuildFolder}/server/main.js`),
     fs.copyFile(path.join(staticPath, 'assets.js'), `${baseBuildFolder}/server/assets.js`),

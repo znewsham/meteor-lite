@@ -1,6 +1,10 @@
+import module from 'module';
+
+const aRequire = module.createRequire(import.meta.url)
 export default function packageJsContext(meteorPackage) {
   return {
     process: globalThis.process,
+    global: globalThis,
     Cordova: {
       depends() {
         // noop
@@ -13,6 +17,9 @@ export default function packageJsContext(meteorPackage) {
       depends(deps) {
         meteorPackage.addNpmDeps(deps);
       },
+      require(moduleName) {
+        return aRequire(moduleName);
+      }
     },
     Package: {
       describe(description) {

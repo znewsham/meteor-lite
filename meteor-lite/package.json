@@ -15,10 +15,12 @@
     "astring": "^1.8.3",
     "commander": "^9.4.0",
     "esbuild": "^0.15.9",
+    "esbuild-plugin-less": "git+https://github.com/znewsham/esbuild-plugin-less.git",
     "escope": "^3.6.0",
     "estree-walker": "^3.0.1",
     "fibers": "git+https://github.com/znewsham/node-fibers.git#0b41197a766e8c1ea4834b561f70616fc4997ba6",
     "fs-extra": "^10.1.0",
+    "less": "2.5.0",
     "meteor": "file:meteor",
     "meteor-promise": "file:../../meteor/npm-packages/meteor-promise",
     "recast": "^0.21.2",
@@ -48,6 +50,7 @@
   "devDependencies": {
     "eslint": "^8.24.0",
     "eslint-config-airbnb-base": "^15.0.0",
-    "eslint-plugin-import": "^2.26.0"
+    "eslint-plugin-import": "^2.26.0",
+    "ts-node": "^10.9.1"
   }
 }

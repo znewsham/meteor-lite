@@ -43,6 +43,7 @@ const commonJSBlacklist = new Set([
 ]);
 
 const globalBlacklist = new Set([
+  'revalify',
   'window',
   'document',
   'navigator',
@@ -59,13 +60,35 @@ globalBlacklist.delete('global'); // meteor does some fuckery here
 
 const excludeFolders = new Set(['.npm', 'node_modules']);
 
-export async function replaceGlobalsInFile(outputFolder, globals, file, importedGlobals, isCommon, packageGetter, archs) {
-  const multiArch = archs?.length > 1;
+// super gnarly bandaid solution, just to test if the "globals are only package globals if they're assigned"
+// we treat all these as package globals.
+const BAD = new Set(['exports', 'module', 'require', 'Npm', 'Assets']);
+
+export async function replaceGlobalsInFile(outputFolder, globals, file, importedGlobalsMaps, isCommon, packageGetter, archs, packageGlobalsSet) {
+  const multiArch = archs?.size > 1;
+  const arch = archs?.size === 1 ? Array.from(archs)[0] : undefined;
   const imports = new Map();
+  const { clientMap, serverMap } = importedGlobalsMaps;
   globals.forEach((global) => {
     let from;
-    if (importedGlobals.has(global)) {
-      from = importedGlobals.get(global);
+    if (arch === 'client') {
+      if (clientMap.has(global)) {
+        from = clientMap.get(global);
+      }
+      else {
+        from = '__globals.js';
+      }
+    }
+    else if (arch === 'server') {
+      if (serverMap.has(global)) {
+        from = serverMap.get(global);
+      }
+      else {
+        from = '__globals.js';
+      }
+    }
+    else if (clientMap.has(global) || serverMap.has(global)) {
+      from = clientMap.get(global) || serverMap.get(global);
     }
     else {
       from = '__globals.js';
@@ -73,7 +96,9 @@ export async function replaceGlobalsInFile(outputFolder, globals, file, imported
     if (!imports.has(from)) {
       imports.set(from, new Set());
     }
-    imports.get(from).add(global);
+    if (from !== '__globals.js' || packageGlobalsSet.has(global) || BAD.has(global)) {
+      imports.get(from).add(global);
+    }
   });
   if (imports.size) {
     const fileContents = (await fsPromises.readFile(file)).toString();
@@ -88,7 +113,11 @@ export async function replaceGlobalsInFile(outputFolder, globals, file, imported
         }
 
         // get the relative path of __globals.js
-        return `import __package_globals__ from "${from}";`;
+        return [
+          `import __package_globals__ from "${from}";`,
+          // MUST be var or let.
+          // `var { ${Array.from(fromImports).join(',')} } = __package_globals__;`,
+        ].join('\n');
       }
       const meteorName = nodeNameToMeteorName(from);
       // if this is a common JS module, we don't allow import of @meteor/meteor (hopefully just required for the global)
@@ -113,7 +142,7 @@ export async function replaceGlobalsInFile(outputFolder, globals, file, imported
         if (!meteorPackage) {
           throw new Error(`importing from missing package ${from}`);
         }
-        const exportsForPackageForArchs = archs.map((arch) => meteorPackage.getExportedVars(arch));
+        const exportsForPackageForArchs = Array.from(archs).map((arch) => meteorPackage.getExportedVars(arch));
         const fromImportsArray = Array.from(fromImports);
         useGnarly = !fromImportsArray.every((importName) => exportsForPackageForArchs.every((exportsForPackageForArch) => exportsForPackageForArch.includes(importName)))
       }
@@ -168,7 +197,7 @@ function getExportNamedDeclarationNodes(ast) {
   walk(ast, {
     enter(node, parent) {
       if (node.type === 'ExportNamedDeclaration') {
-        nodes.push({ node, parent });
+        nodes.push({ node, parent, type: 'export' });
       }
     },
   });
@@ -197,6 +226,20 @@ function maybeRewriteImportsOrExports(ast) {
   return ret;
 }
 
+const reservedKeywords = new Set(['package', 'public']);
+
+function fixReservedUsage(ast) {
+  const packageNodes = [];
+  walk(ast, {
+    enter(node, parent) {
+      if (node.type === 'Identifier' && reservedKeywords.has(node.name)) {
+        packageNodes.push({ node, parent, type: 'reserved' });
+      }
+    },
+  });
+  return packageNodes;
+}
+
 async function getCleanAST(file) {
   try {
     let contents = (await fsPromises.readFile(file)).toString();
@@ -217,18 +260,26 @@ async function getCleanAST(file) {
         contents,
         acornOptions,
       );
-      const exportNamedDeclarationNodes = getExportNamedDeclarationNodes(ast);
-      exportNamedDeclarationNodes.sort((a, b) => b.start - a.start);
-      exportNamedDeclarationNodes.forEach(({ node }) => {
+      const all = [
+        ...fixReservedUsage(ast),
+        ...getExportNamedDeclarationNodes(ast),
+      ];
+      all.sort((a, b) => b.node.start - a.node.start);
+      all.forEach(({ node, type }) => {
         const prefix = contents.slice(0, node.start);
-        const declaration = node.specifiers.map((specifier) => {
-          const ret = `const _${specifier.local.name} = ${specifier.local.name}`;
-          specifier.exported = JSON.parse(JSON.stringify(specifier.local));
-          specifier.local.name = `_${specifier.local.name}`;
-          return ret;
-        }).join('\n');
         const suffix = contents.slice(node.end);
-        contents = `${prefix}\n${declaration}\n${generate(node)}\n${suffix}`;
+        if (type === 'export') {
+          const declaration = node.specifiers.map((specifier) => {
+            const ret = `const _${specifier.local.name} = ${specifier.local.name}`;
+            specifier.exported = JSON.parse(JSON.stringify(specifier.local));
+            specifier.local.name = `_${specifier.local.name}`;
+            return ret;
+          }).join('\n');
+          contents = `${prefix}\n${declaration}\n${generate(node)}\n${suffix}`;
+        }
+        else if (type === 'reserved') {
+          contents = `${prefix}___${node.name}${suffix}`;
+        }
       });
       ast = acorn.parse(
         contents,
@@ -246,9 +297,32 @@ async function getCleanAST(file) {
 function rewriteExports(ast) {
   const exported = [];
   walk(ast, {
-    enter(node) {
+    enter(node, parent) {
+      if (parent?.type === 'AssignmentExpression' || parent?.type === 'VariableDeclarator') {
+        return;
+      }
       if (node.type === 'AssignmentExpression') {
-        if (node.left.type === 'MemberExpression' && node.left.object.name === 'exports') {
+        if (
+          node.left.type === 'MemberExpression'
+          && node.left.object.name === 'module'
+          && node.left.property.name === 'exports'
+        ) {
+          node.__rewritten = true;
+          node.type = 'ExportDefaultDeclaration';
+          node.declaration = node.right;
+          exported.push(null);
+        }
+        else if (
+          node.left.type === 'MemberExpression'
+          && (
+            node.left.object.name === 'exports'
+            || (
+              node.left.object.type === 'MemberExpression'
+              && node.left.object.object.name === 'module'
+              && node.left.object.property.name === 'exports'
+            )
+          )
+        ) {
           node.__rewritten = true;
           node.type = 'ExportNamedDeclaration';
           exported.push(node.left.property.name);
@@ -295,6 +369,7 @@ async function maybeCleanAST(file, isCommon, exportedMap) {
   let hasImports = false;
   let hasRequires = false;
   let usesExports = false;
+  let usesUncleanExports = false;
   if (!isCommon) {
     walk(ast, {
       leave(node) {
@@ -304,7 +379,16 @@ async function maybeCleanAST(file, isCommon, exportedMap) {
       },
       enter(node) {
         if (node.type === 'AssignmentExpression') {
-          if (node.left.type === 'MemberExpression' && node.left.object.name === 'exports') {
+          if (
+            node.left.type === 'MemberExpression'
+            && (
+              node.left.object.name === 'exports'
+              || (node.left.object.type === 'MemberExpression' && node.left.object.object.name === 'module' && node.left.object.property.name === 'exports')
+            )
+          ) {
+            if (!usesUncleanExports) {
+              usesUncleanExports = blockDepth !== 0;
+            }
             usesExports = true;
           }
         }
@@ -353,18 +437,33 @@ async function maybeCleanAST(file, isCommon, exportedMap) {
             importEntries.set(importPath, importEntry);
           }
           node.__rewritten = true;
-          node.type = 'Identifier';
-          node.name = importEntry.name;
+          node.type = 'LogicalExpression';
+          node.operator = '||';
+          node.right = {
+            type: 'Identifier',
+            name: importEntry.name,
+          };
+          node.left = {
+            type: 'MemberExpression',
+            object: {
+              type: 'Identifier',
+              name: importEntry.name,
+            },
+            property: {
+              type: 'Identifier',
+              name: 'default',
+            },
+          };
         }
       },
     });
   }
   let exported;
-  if (usesExports && !hasRequires) {
+  if (usesExports && !hasRequires && !usesUncleanExports) {
     exported = rewriteExports(ast);
     exportedMap.set(file, exported);
   }
-  if (requiresCleaning || importEntries.size) {
+  if (requiresCleaning || importEntries.size || exported?.length) {
     importEntries.forEach(({ node }) => {
       ast.body.splice(0, 0, node);
     });
@@ -390,7 +489,7 @@ export async function maybeCleanASTs(folder, isCommon, exportedMap) {
   }));
 }
 
-async function getGlobals(file, map, isCommon) {
+async function getGlobals(file, map, assignedMap, isCommon) {
   const ast = acorn.parse((await fsPromises.readFile(file)).toString(), acornOptions);
   const hasRewrittenImportsOrExports = maybeRewriteImportsOrExports(ast);
   const scopeManager = analyzeScope(ast, {
@@ -401,6 +500,9 @@ async function getGlobals(file, map, isCommon) {
     nodejsScope: true,
   });
   const currentScope = scopeManager.acquire(ast);
+  if (file.includes('toast')) {
+    debugger;
+  }
   const all = new Set([
     ...currentScope.implicit.variables.map((entry) => entry.identifier.name),
     ...currentScope.implicit.left.filter((entry) => entry.identifier
@@ -415,7 +517,24 @@ async function getGlobals(file, map, isCommon) {
     }
     return true;
   }));
+  
+  const assigned = new Set([
+    ...currentScope.implicit.variables.map((entry) => entry.identifier.name),
+    ...currentScope.implicit.left.filter((entry) => entry.identifier
+      && entry.from.type !== 'class'
+      && entry.identifier.type === 'Identifier'
+      && entry.writeExpr).map((entry) => entry.identifier.name),
+  ].filter((name) => {
+    if (globalBlacklist.has(name)) {
+      return false;
+    }
+    if (isCommon && commonJSBlacklist.has(name)) {
+      return false;
+    }
+    return true;
+  }));
   map.set(file, all);
+  assignedMap.set(file, assigned);
   /*if (requiresCleaning && all.size) {
     map.set(file, all);
     Array.from(all).forEach((packageGlobal) => {
@@ -457,16 +576,17 @@ async function getGlobals(file, map, isCommon) {
 export async function getPackageGlobals(folder, isCommon) {
   const files = await getFileList(folder);
   const map = new Map();
+  const assignedMap = new Map();
   await Promise.all(files.map((file) => {
     try {
-      return getGlobals(file, map, isCommon);
+      return getGlobals(file, map, assignedMap, isCommon);
     }
     catch (e) {
       console.log('error with', file);
       throw e;
     }
   }));
-  return map;
+  return { all: map, assigned: assignedMap };
 }
 
 export function rewriteFileForPackageGlobals(contents, packageGlobalsSet) {
@@ -485,17 +605,57 @@ export function rewriteFileForPackageGlobals(contents, packageGlobalsSet) {
     nodejsScope: true,
   });
   let currentScope = scopeManager.acquire(ast);
+  let stack = [];
+  const acquired = new Set();
   walk(ast, {
     enter(node) {
-      if (/Function/.test(node.type)) {
+      stack.push(node);
+      if (scopeManager.acquire(node)) {
+        acquired.add(node);
         currentScope = scopeManager.acquire(node); // get current function scope
       }
     },
     leave(node, parent, prop, index) {
-      if (/Function/.test(node.type) || /Class/.test(node.type)) {
+      stack.pop();
+      if (acquired.has(node)) {
+        acquired.delete(node);
         currentScope = currentScope.upper; // set to parent scope
       }
-      if (node.type !== 'Identifier' || !packageGlobalsSet.has(node.name)) {
+      /*
+      
+      would be nice if we could figure this out - would make the resulting code SOOO much cleaner. But it would need to be a getter (mongo_driver/collection)
+      if (
+        node.type === 'AssignmentExpression'
+        && packageGlobalsSet.has(node.left.name)
+        && !currentScope.set.has(node.left.name)
+        && !currentScope.through.find((ref) => ref.resolved?.name === node.left.name)
+      ) {
+        node.__rewritten = true;
+        const right = node.right;
+        node.right = {
+          type: "AssignmentExpression",
+          operator: "=",
+          left: {
+            type: "MemberExpression",
+            object: {
+              type: "Identifier",
+              name: "__package_globals__",
+            },
+            property: {
+              type: "Identifier",
+              name: node.left.name,
+            },
+          },
+          right,
+        };
+      }
+      return;*/
+      if (
+        node.type !== 'Identifier'
+        || !packageGlobalsSet.has(node.name)
+        || currentScope.set.has(node.name)
+        || currentScope.through.find((ref) => ref.resolved?.name === node.name)
+      ) {
         return;
       }
 
@@ -515,16 +675,16 @@ export function rewriteFileForPackageGlobals(contents, packageGlobalsSet) {
         };
         return;
       }
-
       // simple rewrite
       if (
         (parent.type !== 'VariableDeclarator' || parent.id !== node)
-        && (parent.type !== 'MemberExpression' || parent.object === node)
+        && (parent.type !== 'MemberExpression' || parent.object === node || parent.computed === true)
         && (parent.type !== 'Property' || parent.value === node)
+        && parent.type !== 'CatchClause'
+        && parent.type !== 'ObjectPattern'
         && parent.type !== 'PropertyDefinition'
-        && parent.type !== 'FunctionExpression'
-        && !currentScope.set.has(node.name)
-        && !currentScope.through.find((ref) => ref.resolved?.name === node.name)
+        && (parent.type !== 'FunctionExpression' || node === parent.left)
+        && (parent.type !== 'FunctionDeclaration' || node === parent.id)
       ) {
         node.__rewritten = true;
         node.type = 'MemberExpression';
@@ -539,10 +699,5 @@ export function rewriteFileForPackageGlobals(contents, packageGlobalsSet) {
       }
     },
   });
-  try {
-    return generate(ast);
-  }
-  catch (error) {
-    throw error;
-  }
+  return generate(ast);
 }

@@ -22,6 +22,9 @@ function runMain() {
 }
 
 Fiber(() => {
+  const start = new Date().getTime();
+  console.log("Server starting", new Date());
   callStartupHooks();
   runMain();
+  console.log("Server started?", (new Date().getTime() - start));
 }).run();

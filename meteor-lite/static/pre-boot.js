@@ -6,6 +6,8 @@ import './assets.js';
 
 const map = {};
 
+// for some packages (e.g., @softwarerero/accounts-t9n)
+globalThis.this = globalThis;
 const AsyncHook = createHook({
   init(asyncId, type, triggerAsyncId, resource) {
     map[asyncId] = {

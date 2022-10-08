@@ -7,6 +7,7 @@ import { meteorNameToNodeName, meteorNameToNodePackageDir } from './helpers/help
 
 import { getPackageGlobals, replaceGlobalsInFile, globalStaticImports, maybeCleanASTs } from './helpers/globals.js';
 import packageJsContext from './helpers/package-js-context.js';
+import { getImportTreeForFile } from './helpers/imports.js';
 import { getExportStr, getExportMainModuleStr } from './helpers/content.js';
 
 const supportedISOPackBuilds = new Map([
@@ -17,6 +18,8 @@ const supportedISOPackBuilds = new Map([
 const commonJS = new Set([
   'jquery',
   'underscore',
+  'momentjs:moment',
+  'softwarerero:accounts-t9n',
 ]);
 
 const excludes = new Set([
@@ -24,9 +27,11 @@ const excludes = new Set([
   'typescript',
   'modules',
   'less',
+  'minifiers',
   'isobuild:compiler-plugin',
   'isobuild:dynamic-import', // TODO?
   'ecmascript-runtime-client', // TODO?
+  'ecmascript-runtime-server', // TODO?
   'isobuild:minifier-plugin',
   'standard-minifier-css',
   'standard-minifier-js',
@@ -96,6 +101,9 @@ class MeteorPackage {
 
   #allPackages = new Set();
 
+  // non weak, non unordered
+  #immediateDependencies = new Set();
+
   #imports = {};
 
   #serverMainModule;
@@ -108,6 +116,7 @@ class MeteorPackage {
 
   #waitingWrite = [];
 
+
   #isoResourcesToCopy = new Map();
 
   #folderPath;
@@ -116,8 +125,26 @@ class MeteorPackage {
 
   static PackageNameToFolderPaths = new Map();
 
+  #archsForFiles = new Map();
+
+  #loadedPromise;
+  
+  #loadedResolve;
+
+  #writtenPromise;
+  
+  #alreadyWritten;
+  
+  #writtenResolve;
+
   constructor(meteorName) {
     this.#meteorName = meteorName;
+    this.#writtenPromise = new Promise((resolve) => {
+      this.#writtenResolve = resolve;
+    });
+    this.#loadedPromise = new Promise((resolve) => {
+      this.#loadedResolve = resolve;
+    });
   }
 
   get folderName() {
@@ -143,7 +170,9 @@ class MeteorPackage {
     this.#meteorName = name || this.#meteorName;
     this.#nodeName = MeteorPackage.meteorNameToNodeName(name || this.#meteorName);
     this.#description = description;
-    this.#version = version;
+
+    // semver doesn't support _
+    this.#version = version.replace('_', '-');
   }
 
   addExports(symbols, archs, opts) {
@@ -182,10 +211,20 @@ class MeteorPackage {
   }
 
   addMeteorDependencies(packages, archs, opts) {
+    // a hack - a lot of our local packages just assume Mongo will be present.
+    if (this.#meteorName.startsWith('qualia:')) {
+      this.#dependencies['@meteor/mongo'] = meteorVersionPlaceholderSymbol;
+      this.#allPackages.add('mongo');
+      this.#immediateDependencies.add('mongo');
+      if (!this.isCommon()) {
+        this.addImport('@meteor/mongo', ['client', 'server']);
+      }
+    }
     if (this.#nodeName !== '@meteor/meteor') {
       // TODO: hack - figure out how to deal with the global problem. In Meteor we need the global to be a package global, everywhere else we need it to be actually global (unless it's imported from meteor)
       this.#dependencies['@meteor/meteor'] = meteorVersionPlaceholderSymbol;
       this.#allPackages.add('meteor');
+      this.#immediateDependencies.add('meteor');
 
       // why does this condition need to be here and not above? It seems like all packages (e.g., underscore) need the `allPackages` and `dependencies` set,
       // but common mustn't import.
@@ -215,6 +254,7 @@ class MeteorPackage {
       // TODO: how to ensure the package is available when the dependency is weak?
       if (!opts?.unordered && !opts?.weak) {
         this.addImport(nodeName, archs);
+        this.#immediateDependencies.add(name);
       }
       // TODO: other opts?
     });
@@ -231,6 +271,7 @@ class MeteorPackage {
 
       // we should probably NEVER use version, since we can't do resolution the way we want (at least until all versions are published to npm)
       this.#dependencies[nodeName] = meteorVersionPlaceholderSymbol;
+      this.#immediateDependencies.add(name);
       if (!archs?.length || archs.includes('server')) {
         this.#serverJsImports.add(nodeName);
         this.#impliedServerPackages.add(nodeName);
@@ -241,6 +282,7 @@ class MeteorPackage {
       }
     });
   }
+
 
   setMainModule(file, archs) {
     if (!archs?.length || archs.includes('server')) {
@@ -300,11 +342,13 @@ class MeteorPackage {
     };
   }
 
-  getImportedGlobalsMap(globals) {
-    const map = new Map();
+  getImportedGlobalsMaps(globals) {
+    const clientMap = new Map();
+    const serverMap = new Map();
     globals.forEach((global) => {
       if (globalStaticImports.has(global) && globalStaticImports.get(global) !== this.#nodeName) {
-        map.set(global, globalStaticImports.get(global));
+        clientMap.set(global, globalStaticImports.get(global));
+        serverMap.set(global, globalStaticImports.get(global));
       }
     });
     Object.keys(this.#dependencies)
@@ -315,14 +359,50 @@ class MeteorPackage {
         // it wasn't a meteor dep.
           return;
         }
-        meteorPackage.getExportedVars()
+        const { clientMap: depClientMap, serverMap: depServerMap } = meteorPackage.getImportedGlobalsMaps(globals);
+        depClientMap.forEach((providingDep, exp) => {
+          clientMap.set(exp, providingDep);
+        });
+        depServerMap.forEach((providingDep, exp) => {
+          serverMap.set(exp, providingDep);
+        });
+        meteorPackage.getImplies('client')
+          .forEach((imp) => {
+            const impPackageName = MeteorPackage.nodeNameToMeteorName(imp);
+            const impliedPackage = packageMap.get(impPackageName);
+            impliedPackage.getExportedVars('client')
+              .forEach((exp) => {
+                if (globals.has(exp)) {
+                  clientMap.set(exp, imp);
+                }
+              });
+          });
+        meteorPackage.getExportedVars('client')
           .forEach((exp) => {
             if (globals.has(exp)) {
-              map.set(exp, dep);
+              clientMap.set(exp, dep);
+            }
+          });
+        meteorPackage.getImplies('server')
+          .forEach((imp) => {
+            const impPackageName = MeteorPackage.nodeNameToMeteorName(imp);
+            const impliedPackage = packageMap.get(impPackageName);
+            impliedPackage.getExportedVars('server')
+              .forEach((exp) => {
+                if (globals.has(exp)) {
+                  serverMap.set(exp, imp);
+                }
+              });
+          });
+        meteorPackage.getExportedVars('server')
+          .forEach((exp) => {
+            if (globals.has(exp)) {
+              serverMap.set(exp, dep);
             }
           });
       });
-    return map;
+    
+    return { clientMap, serverMap };
   }
 
   getImplies(clientOrServer) {
@@ -346,9 +426,15 @@ class MeteorPackage {
   }
 
   async writeToNpmModule(outputParentFolder) {
+    await this.#loadedPromise;
+    if (this.#alreadyWritten) {
+      await this.#writtenPromise;
+      return;
+    }
+    this.#alreadyWritten = true;
     let state = 0;
     try {
-      await Promise.all(this.#waitingWrite.map((waiting) => waiting.writeToNpmModule(outputParentFolder)));
+      await Promise.all(Array.from(this.#immediateDependencies).map((p) => packageMap.get(p).writeToNpmModule(outputParentFolder)))
       state = 1;
       const outputFolder = path.resolve(`${outputParentFolder}/${meteorNameToNodePackageDir(this.#meteorName)}`);
       if (this.#isISOPack) {
@@ -368,56 +454,62 @@ class MeteorPackage {
       state = 2;
       const exportedMap = new Map();
       await maybeCleanASTs(outputFolder, commonJS.has(this.#meteorName), exportedMap);
-      const globalsByFile = await getPackageGlobals(outputFolder, commonJS.has(this.#meteorName));
-      if (this.#meteorName === 'browser-policy') {
+      if (this.#serverMainModule) {
+        await getImportTreeForFile(outputFolder, path.resolve(outputFolder, this.#serverMainModule), 'server', this.#archsForFiles);
+      }
+      if (this.#clientMainModule) {
+        await getImportTreeForFile(outputFolder, path.resolve(outputFolder, this.#clientMainModule), 'client', this.#archsForFiles);
+      }
+      // must happen after getting the import tree.
+      await Promise.all(Array.from(this.#clientJsImports).map(async (file) => {
+        if (file.startsWith('.')) {
+          await getImportTreeForFile(outputFolder, path.resolve(outputFolder, file), 'client', this.#archsForFiles);
+        }
+      }));
+      await Promise.all(Array.from(this.#serverJsImports).map(async (file) => {
+        if (file.startsWith('.')) {
+          await getImportTreeForFile(outputFolder, path.resolve(outputFolder, file), 'server', this.#archsForFiles);
+        }
+      }));
+      const { all: globalsByFile, assigned: packageGlobalsByFile } = await getPackageGlobals(outputFolder, commonJS.has(this.#meteorName));
+      if (this.#meteorName === 'browser-policy') { // TODO? Why did I make this specific to one package?!
         exportedMap.forEach((exported, file) => {
           const localFile = file.replace(outputFolder, '.');
           if (localFile === this.#serverMainModule) {
-            this.#serverJsExports = Array.from(new Set([...this.#serverJsExports, ...exported]));
+            this.#serverJsExports = Array.from(new Set([...this.#serverJsExports, ...exported.filter(Boolean)]));
           }
           if (localFile === this.#clientJsExports) {
-            this.#clientJsExports = Array.from(new Set([...this.#clientJsExports, ...exported]));
+            this.#clientJsExports = Array.from(new Set([...this.#clientJsExports, ...exported.filter(Boolean)]));
           }
         });
-      }
-      if (this.#meteorName === 'meteorhacks:picker') {
-        debugger;
       }
       const allGlobals = new Set(Array.from(globalsByFile.values()).flatMap((v) => Array.from(v)));
-      const importedGlobals = this.getImportedGlobalsMap(allGlobals);
-      const packageGlobals = Array.from(allGlobals)
-        .filter((global) => !importedGlobals.has(global));
+      const packageGlobals = new Set(Array.from(packageGlobalsByFile.values()).flatMap((v) => Array.from(v)));
+      const { clientMap, serverMap } = this.getImportedGlobalsMaps(allGlobals);
+
+      // these are all the globals USED in the package. Not just those assigned. 
+      // TODO: this should go away, but is needed for the exports/require/module hack below
+      const badPackageGlobals = Array.from(allGlobals)
+        .filter((global) => !clientMap.has(global) && !serverMap.has(global));
       
-      const archsForFiles = new Map();
-      if (globalsByFile.size && !this.#serverMainModule && !this.#clientMainModule) {
-        globalsByFile.forEach((_, file) => {
-          const importPath = file.replace(outputFolder, '.');
-          const archs = [];
-          if (this.#serverJsImports.has(importPath)) {
-            archs.push('server');
-          }
-          if (this.#clientJsImports.has(importPath)) {
-            archs.push('client');
-          }
-          archsForFiles.set(file, archs);
-        });
-      }
+      const archsForFiles = this.#archsForFiles;
       await Promise.all(Array.from(globalsByFile.entries()).map(([file, globals]) => replaceGlobalsInFile(
         outputFolder,
         globals,
         file,
-        importedGlobals,
+        { clientMap, serverMap },
         this.isCommon(),
         (name) => packageMap.get(name),
-        archsForFiles.get(file),
+        archsForFiles.get(file.replace(outputFolder, '.')),
+        packageGlobals,
       )));
       state = 3;
 
-      if (packageGlobals.length || this.#serverJsExports.length || this.#clientJsExports.length) {
+      if (badPackageGlobals.length || this.#serverJsExports.length || this.#clientJsExports.length) {
         const exportNamesSet = new Set([
           ...this.#serverJsExports,
           ...this.#clientJsExports,
-          ...packageGlobals,
+          ...badPackageGlobals,
         ]);
 
         const hasRequire = exportNamesSet.has('require');
@@ -521,16 +613,32 @@ class MeteorPackage {
           `${outputFolder}/__server.js`,
           [
             getImportStr(this.#serverJsImports, commonJS.has(this.#meteorName)),
-            ...!this.#serverMainModule ? [getExportStr(this.#meteorName, 'server', this.#serverJsExports, this.#serverJsImports, commonJS.has(this.#meteorName), (name) => packageMap.get(name))] : [],
-            ...(this.#serverMainModule ? [await getExportMainModuleStr(this.#meteorName, this.#serverMainModule, outputFolder)] : []),
+            ...(this.#serverMainModule ? [await getExportMainModuleStr(this.#meteorName, this.#serverMainModule, outputFolder, this.isCommon())] : []),
+            getExportStr(
+              this.#meteorName,
+              'server',
+              this.#serverJsExports,
+              this.#serverJsImports,
+              this.isCommon(),
+              (name) => packageMap.get(name),
+              this.#serverMainModule,
+            ),
           ].join('\n'),
         ),
         fsPromises.writeFile(
           `${outputFolder}/__client.js`,
           [
             getImportStr(this.#clientJsImports, commonJS.has(this.#meteorName)),
-            ...!this.#clientMainModule ? [getExportStr(this.#meteorName, 'client', this.#clientJsExports, this.#clientJsImports, commonJS.has(this.#meteorName), (name) => packageMap.get(name))] : [],
-            ...(this.#clientMainModule ? [await getExportMainModuleStr(this.#meteorName, this.#clientMainModule, outputFolder)] : []),
+            ...(this.#clientMainModule ? [await getExportMainModuleStr(this.#meteorName, this.#clientMainModule, outputFolder, this.isCommon())] : []),
+            getExportStr(
+              this.#meteorName,
+              'client',
+              this.#clientJsExports,
+              this.#clientJsImports,
+              this.isCommon(),
+              (name) => packageMap.get(name),
+              this.#clientMainModule,
+            ),
           ].join('\n'),
         ),
       ]);
@@ -541,6 +649,9 @@ class MeteorPackage {
       console.error(error);
       process.exit();
       throw error;
+    }
+    finally {
+      this.#writtenResolve();
     }
   }
 
@@ -556,9 +667,15 @@ class MeteorPackage {
     json.uses.forEach(({ package: packageName, weak, unordered }) => {
       this.addMeteorDependencies([packageName], [clientOrServer], { weak, unordered });
     });
-    json.resources.forEach(({ path: aPath, file, length }) => {
-      if (length === 0) {
-        return;
+    json.resources.forEach(({ path: aPath, file, type, servePath }) => {
+      if (!aPath && type !== 'source') {
+        // iron_dynamic-template has a compiled version of dynamic_template.html I think
+        // this needs to be imported as normal, but it doesn't have a "path"
+        aPath = servePath.split('/').slice(3).join('/');
+        this.addImport(`./${aPath}`, [clientOrServer]);
+      }
+      if (type === 'source' && aPath.startsWith('/packages/')) {
+        aPath = aPath.replace('/packages/', `/${clientOrServer}/`);
       }
       this.#isoResourcesToCopy.set(aPath, file);
     });
@@ -573,14 +690,17 @@ class MeteorPackage {
     }
     json.resources
       .filter(({ type, fileOptions: { lazy } = {} }) => type === 'source' && lazy !== true)
-      .forEach(({ path: aPath, file }) => {
+      .forEach(({ path: aPath }) => {
+        if (aPath.startsWith('/packages/')) {
+          aPath = aPath.replace('/packages/', `/${clientOrServer}/`);
+        }
         this.addImport(`./${aPath}`, [clientOrServer]);
       });
 
     json.resources
       .filter(({ type }) => type === 'asset')
       .forEach(({ path: aPath }) => {
-        this.addAssets(aPath, [clientOrServer]);
+        this.addAssets([aPath], [clientOrServer]);
       });
     if (json.declaredExports) {
       json.declaredExports.forEach(({ name, testOnly }) => {
@@ -600,7 +720,6 @@ class MeteorPackage {
     const basePath = path.join(meteorInstall, 'packages', folderName);
 
     if (!await fs.pathExists(basePath)) {
-      console.log(basePath);
       throw new Error('Package not installed by meteor');
     }
     const names = (await fsPromises.readdir(basePath)).filter((name) => !name.startsWith('.'));
@@ -638,7 +757,13 @@ class MeteorPackage {
       this.#folderPath = path.dirname(packageJsPath);
       const script = new vm.Script((await fsPromises.readFile(packageJsPath)).toString());
       const context = packageJsContext(this);
-      script.runInNewContext(context);
+      try {
+        script.runInNewContext(context);
+      }
+      catch (e) {
+        console.error(`problem parsing ${this.#meteorName}`);
+        throw e;
+      }
       packageMap.set(this.#meteorName, this);
 
       // first make sure all impled or used packages are loaded
@@ -673,6 +798,9 @@ class MeteorPackage {
       console.log(this.#meteorName || this.#folderName);
       console.error(error);
       throw error;
+    }
+    finally {
+      this.#loadedResolve();
     }
   }
 
@@ -711,7 +839,7 @@ class MeteorPackage {
 
   static foldersToSearch(...packagesPaths) {
     // hack, until we move to using ISOPacks for core/non-core packages.
-    return packagesPaths.flatMap((subPath) => [subPath, path.join(subPath, 'non-core')]);
+    return packagesPaths.flatMap((subPath) => [subPath, path.join(subPath, 'non-core'), path.join(subPath, 'deprecated')]);
   }
 
   static async ensurePackage(name, meteorInstall, ...packagesPaths) {

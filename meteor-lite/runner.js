@@ -5,6 +5,7 @@ import generateServer from './generate-server.js';
 import convertPackagesToNodeModulesForApp from './convert-packages-for-app.js';
 import convertPackageToNodeModule from './convert-package.js';
 import run from './dev-run.js';
+import generateMain from './build-main.js';
 
 program
   .version('0.1.0')
@@ -23,9 +24,23 @@ program
 program
   .command('dev-run')
   .action(async () => {
+    let start = new Date().getTime();
     await generateWebBrowser();
+    let end = new Date().getTime();
+    console.log("web browser", end - start);
+    start = end;
     await generateServer(['web.browser']);
+    end = new Date().getTime();
+    console.log("server", end - start);
     await run();
+  });
+
+program
+  .command('build-main')
+  .requiredOption('-e, --env <env>', 'which env (server or client)')
+  .option('-u, --update', 'update the main.js file?')
+  .action(async ({ env, update }) => {
+    await generateMain({ env, update });
   });
 
 program

@@ -2,15 +2,15 @@ import fs from 'fs/promises';
 
 import { baseFolder, generateGlobals } from './helpers/command-helpers.js';
 import { convertPackage, packageMap } from './convert-meteor-package-to-npm.js';
-import { nodeNameToMeteorName } from './helpers/helpers.js';
+import { meteorNameToNodeName, nodeNameToMeteorName } from './helpers/helpers.js';
 
-async function updateDependenciesForArch(actualPackages, arch) {
-  const map = await generateGlobals(actualPackages.map((dep) => nodeNameToMeteorName(dep)), arch);
+async function updateDependenciesForArch(outputDirectory, actualPackages, arch) {
+  const map = await generateGlobals(outputDirectory, actualPackages, arch);
   await fs.writeFile(`./${arch}/dependencies.js`, Array.from(map.entries()).map(([packageName, globals], i) => {
     if (!globals.size) {
-      return `import "${packageName}";`;
+      return `import "${meteorNameToNodeName(packageName)}";`;
     }
-    const imp = `import * as __package_${i} from "${packageName}";`;
+    const imp = `import * as __package_${i} from "${meteorNameToNodeName(packageName)}";`;
     return [
       imp,
       ...Array.from(globals).map((global) => `globalThis.${global} = __package_${i}.${global}`),
@@ -40,9 +40,9 @@ export default async function convertPackagesToNodeModulesForApp({
 
   if (updateDependencies) {
     await Promise.all([
-      updateDependenciesForArch(actualPackages, 'client'),
-      updateDependenciesForArch(actualPackages, 'server'),
+      updateDependenciesForArch(outputDirectory, actualPackages, 'client'),
+      updateDependenciesForArch(outputDirectory, actualPackages, 'server'),
     ]);
   }
-  return actualPackages;
+  return allPackages;
 }

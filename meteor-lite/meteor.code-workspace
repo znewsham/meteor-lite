@@ -9,6 +9,14 @@
 			"path": "../../../../vagrant/share/meteor/.meteor"
 		},
 		{
+			"name": "blaze",
+			"path": "../../blaze"
+		},
+		{
+			"name": "node-fibers",
+			"path": "../../node-fibers"
+		},
+		{
 			"name": "npm-meteor-converter",
 			"path": ".."
 		}
