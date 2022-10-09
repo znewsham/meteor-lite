@@ -191,6 +191,10 @@ class MeteorPackage {
   }
 
   addImport(item, archs) {
+    // hack for old packages (iron:*) that add html files to the server by omitting the archs arg.
+    if ((item.endsWith('.html') || item.endsWith('.css')) && !archs) {
+      archs = ['client'];
+    }
     if (!archs?.length || archs.includes('server')) {
       this.#serverJsImports.add(item);
     }
@@ -441,8 +445,9 @@ class MeteorPackage {
         await this.#copyISOPackResources(outputFolder);
       }
       else {
+        const actualPath = await fs.realpath(this.#folderPath);
         await fs.copy(
-          this.#folderPath,
+          actualPath,
           outputFolder,
           {
             filter(src) {

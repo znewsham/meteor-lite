@@ -122,6 +122,9 @@ export async function replaceGlobalsInFile(outputFolder, globals, file, imported
       const meteorName = nodeNameToMeteorName(from);
       // if this is a common JS module, we don't allow import of @meteor/meteor (hopefully just required for the global)
       // if you're importing something else...we're gonna have to fix by hand.
+      if (!packageGetter(meteorName)) {
+        throw new Error(`${meteorName} does not exist`);
+      }
       if (isCommon) {
         if (packageGetter(meteorName).isCommon()) {
           return `const { ${Array.from(fromImports).join(', ')} } = require("${from}");`;
