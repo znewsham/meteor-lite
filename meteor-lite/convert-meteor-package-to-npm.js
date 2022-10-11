@@ -509,12 +509,13 @@ class MeteorPackage {
         packageGlobals,
       )));
       state = 3;
-
+  
       if (badPackageGlobals.length || this.#serverJsExports.length || this.#clientJsExports.length) {
         const exportNamesSet = new Set([
           ...this.#serverJsExports,
           ...this.#clientJsExports,
           ...badPackageGlobals,
+          ...packageGlobals,
         ]);
 
         const hasRequire = exportNamesSet.has('require');

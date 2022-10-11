@@ -72,7 +72,7 @@ export async function replaceGlobalsInFile(outputFolder, globals, file, imported
   globals.forEach((global) => {
     let from;
     if (arch === 'client') {
-      if (clientMap.has(global)) {
+      if (clientMap.has(global) && !packageGlobalsSet.has(global)) {
         from = clientMap.get(global);
       }
       else {
@@ -80,14 +80,14 @@ export async function replaceGlobalsInFile(outputFolder, globals, file, imported
       }
     }
     else if (arch === 'server') {
-      if (serverMap.has(global)) {
+      if (serverMap.has(global) && !packageGlobalsSet.has(global)) {
         from = serverMap.get(global);
       }
       else {
         from = '__globals.js';
       }
     }
-    else if (clientMap.has(global) || serverMap.has(global)) {
+    else if ((clientMap.has(global) || serverMap.has(global)) && !packageGlobalsSet.has(global)) {
       from = clientMap.get(global) || serverMap.get(global);
     }
     else {
@@ -96,7 +96,10 @@ export async function replaceGlobalsInFile(outputFolder, globals, file, imported
     if (!imports.has(from)) {
       imports.set(from, new Set());
     }
-    if (from !== '__globals.js' || packageGlobalsSet.has(global) || BAD.has(global)) {
+    if (from !== '__globals.js' && !packageGlobalsSet.has(global)) {
+      imports.get(from).add(global);
+    }
+    else if (from === '__globals.js' && (packageGlobalsSet.has(global) || BAD.has(global))) {
       imports.get(from).add(global);
     }
   });

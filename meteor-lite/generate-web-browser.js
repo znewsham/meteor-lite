@@ -8,6 +8,7 @@ import {
   listFilesInDir, generateProgram, baseBuildFolder, ensureBuildDirectory, readPackageJson,
 } from './helpers/command-helpers.js';
 
+let guessStarted = null;
 let totalLessTime = 0;
 let totalHtmlTime = 0;
 const cacheMap = new Map();
@@ -17,6 +18,9 @@ const lessPlugin = {
     build.onLoad(
       { filter: /.(less|lessimport)$/ },
       async ({ path: filePath }) => {
+        if (!guessStarted) {
+          guessStarted = new Date().getTime();
+        }
         const start = new Date().getTime();
         try {
           const stat = await fs.stat(filePath);
@@ -74,6 +78,9 @@ const blazePlugin = {
     build.onLoad(
       { filter: /\.html$/ },
       async ({ path: filePath }) => {
+        if (!guessStarted) {
+          guessStarted = new Date().getTime();
+        }
         const start = new Date().getTime();
         try {
           const stat = await fs.stat(filePath);
@@ -141,8 +148,10 @@ async function buildClient(packageJson) {
         onRebuild(error, result) {
           console.log(`   less: `, totalLessTime);
           console.log(`   html: `, totalHtmlTime);
+          console.log(`   total: `, new Date().getTime() - guessStarted);
           totalLessTime = 0;
           totalHtmlTime = 0;
+          guessStarted = null;
         },
       },
     });

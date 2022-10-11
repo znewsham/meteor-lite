@@ -54,11 +54,13 @@ export function getExportStr(meteorName, clientOrServer, jsExports, jsImports, i
     meteorPackage.getExportedVars(clientOrServer)
       .forEach((imp) => {
         if (exportsSet.has(imp)) {
-          imported.add(imp);
-          if (!importedMap.has(dep)) {
-            importedMap.set(dep, new Set());
+          if (!imported.has(imp)) {
+            if (!importedMap.has(dep)) {
+              importedMap.set(dep, new Set());
+            }
+            importedMap.get(dep).add(imp);
+            imported.add(imp);
           }
-          importedMap.get(dep).add(imp);
         }
       });
   });
