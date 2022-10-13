@@ -5,10 +5,6 @@
 			"path": "../../meteor"
 		},
 		{
-			"name": ".meteor",
-			"path": "../../../../vagrant/share/meteor/.meteor"
-		},
-		{
 			"name": "blaze",
 			"path": "../../blaze"
 		},

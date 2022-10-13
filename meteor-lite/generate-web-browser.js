@@ -131,7 +131,8 @@ async function buildClient(packageJson) {
       entryPoints: [packageJson.meteor.mainModule.client],
       outfile: `${baseBuildFolder}/web.browser/app.js`,
       external: [
-        '@sinonjs/fake-timers',
+        'util',
+        // '@sinonjs/fake-timers',
         '/packages/*',
         '/images/*',
         '/fonts/*',

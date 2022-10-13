@@ -626,8 +626,8 @@ class MeteorPackage {
           Array.from(testArchsForFiles.keys()).map((file) => path.join(outputFolder, file)),
         );
         const packageTestGlobals = new Set(Array.from(packageTestGlobalsByFile.values()).flatMap((v) => Array.from(v)));
-        if (this.#meteorName === 'ddp-client') {
-          console.log(testGlobalsByFolder);
+        if (this.#meteorName === 'minimongo') {
+          console.log(testGlobalsByFolder, packageGlobals, new Set([...Array.from(packageTestGlobals), ...Array.from(packageGlobals)]),);
         }
         const testServerOnlyImportsSet = new Set();
         const allTestGlobals = new Set(Array.from(testGlobalsByFolder.values()).flatMap((v) => Array.from(v)));
@@ -640,7 +640,7 @@ class MeteorPackage {
           this.isCommon(),
           (name) => packageMap.get(name),
           testArchsForFiles.get(file.replace(outputFolder, '.')),
-          packageTestGlobals,
+          new Set([...Array.from(packageTestGlobals), ...Array.from(packageGlobals)]),
           testServerOnlyImportsSet,
         )));
         await this.#testPackage.writeEntryPoints(outputFolder);

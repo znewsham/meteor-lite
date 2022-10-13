@@ -92,9 +92,10 @@ program
   .command('test-packages')
   .requiredOption('-p, --packages <package...>', 'the packages to test')
   .requiredOption('-d, --directory <directory>', 'the directory to run the tests in - should have installed all the dependencies already')
+  .option('-d, --extra-packages <extraPackages...>', 'any extra packages to load')
   .requiredOption('--driver-package <driverPackage>', 'the test driver to use')
-  .action(async ({ directory, packages, driverPackage }) => {
-    await testPackages({ directory, packages, driverPackage });
+  .action(async ({ directory, packages, driverPackage, extraPackages }) => {
+    await testPackages({ directory, packages, driverPackage, extraPackages });
     await generateWebBrowser();
     await generateServer(['web.browser']);
     await run();
