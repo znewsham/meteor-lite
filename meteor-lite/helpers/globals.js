@@ -7,6 +7,7 @@ import { walk } from 'estree-walker';
 import fsPromises, { readdir } from 'fs/promises';
 import { windowGlobals } from './window-globals.js';
 import { nodeNameToMeteorName } from './helpers.js';
+import { getImportTreeForFile } from './imports.js';
 
 export const acornOptions = {
   ecmaVersion: 2022,
@@ -43,6 +44,7 @@ const commonJSBlacklist = new Set([
 ]);
 
 const globalBlacklist = new Set([
+  'runTests', // meteor expects test drivers to expose a global `runTests`
   'revalify',
   'window',
   'document',
@@ -64,7 +66,23 @@ const excludeFolders = new Set(['.npm', 'node_modules']);
 // we treat all these as package globals.
 const BAD = new Set(['exports', 'module', 'require', 'Npm', 'Assets']);
 
-export async function replaceGlobalsInFile(outputFolder, globals, file, importedGlobalsMaps, isCommon, packageGetter, archs, packageGlobalsSet) {
+const SERVER_ONLY_IMPORTS = new Set([
+  'fibers',
+  'util',
+]);
+
+export async function replaceGlobalsInFile(
+  outputFolder,
+  globals,
+  file,
+  importedGlobalsMaps,
+  isCommon,
+  packageGetter,
+  archs,
+  packageGlobalsSet,
+  serverOnlyImportsSet,
+) {
+  // TODO - this needs to be "isClientServerArch"
   const multiArch = archs?.size > 1;
   const arch = archs?.size === 1 ? Array.from(archs)[0] : undefined;
   const imports = new Map();
@@ -165,7 +183,7 @@ export async function replaceGlobalsInFile(outputFolder, globals, file, imported
         file,
         [
           importStr,
-          rewriteFileForPackageGlobals(fileContents, imports.get('__globals.js')),
+          rewriteFileForPackageGlobals(fileContents, imports.get('__globals.js'), multiArch, serverOnlyImportsSet, file),
         ].join('\n'),
       );
     }
@@ -481,12 +499,88 @@ async function maybeCleanAST(file, isCommon, exportedMap) {
     }
     await fsPromises.writeFile(file, generate(ast));
   }
+  return ast;
+}
+
+async function maybeCleanAndGetImportTreeForSingleFile(outputFolder, file, arch, archsForFiles, isCommon, exportedMap, processedSet) {
+  if (processedSet.has(file)) {
+    return [];
+  }
+  processedSet.add(file);
+  if (file.endsWith('.html') || file.endsWith('.css')) {
+    return [];
+  }
+  const ast = await maybeCleanAST(file, isCommon, exportedMap);
+  const newFiles = await getImportTreeForFile(
+    outputFolder,
+    file,
+    arch,
+    archsForFiles,
+    ast,
+  );
+  return newFiles;
+}
+
+async function maybeCleanAndGetImportTreeForArch(
+  outputFolder,
+  entryPointsForArch,
+  arch,
+  archsForFiles,
+  isCommon,
+  exportedMap,
+) {
+  const processedSet = new Set([]);
+  const queue = [...entryPointsForArch];
+  while (queue.length !== 0) {
+    const items = queue.splice(0, queue.length);
+
+    // eslint-disable-next-line
+    await Promise.all(items.map(async (file) => {
+      const newFiles = await maybeCleanAndGetImportTreeForSingleFile(
+        outputFolder,
+        file,
+        arch,
+        archsForFiles,
+        isCommon,
+        exportedMap,
+        processedSet,
+      );
+      queue.push(...newFiles);
+    }));
+  }
+}
+
+export async function getImportTreeForPackageAndClean(
+  outputFolder,
+  entryPointsForArches,
+  archsForFiles,
+  isCommon,
+  exportedMap,
+) {
+  return Promise.all([
+    maybeCleanAndGetImportTreeForArch(
+      outputFolder,
+      entryPointsForArches.server,
+      'server',
+      archsForFiles,
+      isCommon,
+      exportedMap,
+    ),
+    maybeCleanAndGetImportTreeForArch(
+      outputFolder,
+      entryPointsForArches.client,
+      'client',
+      archsForFiles,
+      isCommon,
+      exportedMap,
+    ),
+  ]);
 }
 export async function maybeCleanASTs(folder, isCommon, exportedMap) {
   const files = await getFileList(folder);
-  await Promise.all(files.map((file) => {
+  await Promise.all(files.map(async (file) => {
     try {
-      return maybeCleanAST(file, isCommon, exportedMap);
+      await maybeCleanAST(file, isCommon, exportedMap);
     }
     catch (e) {
       console.log('error with', file);
@@ -506,9 +600,6 @@ async function getGlobals(file, map, assignedMap, isCommon) {
     nodejsScope: true,
   });
   const currentScope = scopeManager.acquire(ast);
-  if (file.includes('toast')) {
-    debugger;
-  }
   const all = new Set([
     ...currentScope.implicit.variables.map((entry) => entry.identifier.name),
     ...currentScope.implicit.left.filter((entry) => entry.identifier
@@ -523,7 +614,7 @@ async function getGlobals(file, map, assignedMap, isCommon) {
     }
     return true;
   }));
-  
+
   const assigned = new Set([
     ...currentScope.implicit.variables.map((entry) => entry.identifier.name),
     ...currentScope.implicit.left.filter((entry) => entry.identifier
@@ -579,8 +670,7 @@ async function getGlobals(file, map, assignedMap, isCommon) {
   }
 }
 
-export async function getPackageGlobals(folder, isCommon) {
-  const files = await getFileList(folder);
+export async function getPackageGlobals(isCommon, files) {
   const map = new Map();
   const assignedMap = new Map();
   await Promise.all(files.map((file) => {
@@ -595,9 +685,37 @@ export async function getPackageGlobals(folder, isCommon) {
   return { all: map, assigned: assignedMap };
 }
 
-export function rewriteFileForPackageGlobals(contents, packageGlobalsSet) {
+// TODO - do a better job figuring out server/client only imports (static analysis?)
+function replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet, file) {
+  if (!isMultiArch) {
+    // if we're not multi-arch, don't bother rewriting.
+    return;
+  }
+  walk(ast, {
+    enter(node) {
+      if (node.type === 'ImportDeclaration') {
+        const rootImportSource = node.source.value.split('/')[0];
+        if (SERVER_ONLY_IMPORTS.has(rootImportSource)) {
+          node.__rewritten = true;
+          node.source.value = `#${node.source.value}`;
+          node.source.raw = `'${node.source.value}'`;
+          if (rootImportSource !== node.source.value) {
+            serverOnlyImportsSet.add(`${rootImportSource}/*`);
+          }
+          else {
+            serverOnlyImportsSet.add(rootImportSource);
+          }
+        }
+      }
+    },
+  });
+}
+
+export function rewriteFileForPackageGlobals(contents, packageGlobalsSet, isMultiArch, serverOnlyImportsSet, file) {
   if (!packageGlobalsSet?.size) {
-    return contents;
+    packageGlobalsSet = new Set();
+    // no short circuting, we need to handle serverOnlyImports too :'(
+    // return contents;
   }
   const ast = acorn.parse(
     contents,
@@ -613,6 +731,7 @@ export function rewriteFileForPackageGlobals(contents, packageGlobalsSet) {
   let currentScope = scopeManager.acquire(ast);
   let stack = [];
   const acquired = new Set();
+  replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet, file);
   walk(ast, {
     enter(node) {
       stack.push(node);
@@ -627,35 +746,6 @@ export function rewriteFileForPackageGlobals(contents, packageGlobalsSet) {
         acquired.delete(node);
         currentScope = currentScope.upper; // set to parent scope
       }
-      /*
-      
-      would be nice if we could figure this out - would make the resulting code SOOO much cleaner. But it would need to be a getter (mongo_driver/collection)
-      if (
-        node.type === 'AssignmentExpression'
-        && packageGlobalsSet.has(node.left.name)
-        && !currentScope.set.has(node.left.name)
-        && !currentScope.through.find((ref) => ref.resolved?.name === node.left.name)
-      ) {
-        node.__rewritten = true;
-        const right = node.right;
-        node.right = {
-          type: "AssignmentExpression",
-          operator: "=",
-          left: {
-            type: "MemberExpression",
-            object: {
-              type: "Identifier",
-              name: "__package_globals__",
-            },
-            property: {
-              type: "Identifier",
-              name: node.left.name,
-            },
-          },
-          right,
-        };
-      }
-      return;*/
       if (
         node.type !== 'Identifier'
         || !packageGlobalsSet.has(node.name)

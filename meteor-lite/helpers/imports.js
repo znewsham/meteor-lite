@@ -19,15 +19,15 @@ async function resolveFile(actualFile) {
   return false;
 }
 
-export async function getImportTreeForFile(outputFolder, absoluteFile, arch, archsForFilesMap) {
-  const actualFile = await resolveFile(absoluteFile);
+export async function getImportTreeForFile(outputFolder, absoluteFile, arch, archsForFilesMap, ast) {
+  const actualFile = absoluteFile;
   try {
     if (!actualFile || !actualFile.endsWith('.js')) {
-      return;
+      return [];
     }
     const baseFile = actualFile.replace(outputFolder, '.');
     if (archsForFilesMap.has(baseFile) && archsForFilesMap.get(baseFile).has(arch)) {
-      return;
+      return [];
     }
     if (!archsForFilesMap.has(baseFile)) {
       archsForFilesMap.set(baseFile, new Set([arch]));
@@ -36,10 +36,12 @@ export async function getImportTreeForFile(outputFolder, absoluteFile, arch, arc
       archsForFilesMap.get(baseFile).add(arch);
     }
     const contents = (await fsPromises.readFile(actualFile)).toString();
-    const ast = acorn.parse(
-      contents,
-      acornOptions,
-    );
+    if (!ast) {
+      ast = acorn.parse(
+        contents,
+        acornOptions,
+      );
+    }
 
     const toFind = new Set();
     ast.body.forEach((node) => {
@@ -47,9 +49,13 @@ export async function getImportTreeForFile(outputFolder, absoluteFile, arch, arc
         toFind.add(node.source.value);
       }
     });
-    await Promise.all(Array.from(toFind).map(
-      (newFile) => getImportTreeForFile(outputFolder, path.resolve(path.dirname(absoluteFile), newFile), arch, archsForFilesMap),
-    ));
+    return Promise.all(Array.from(toFind).map(async (newFile) => {
+      const result = await resolveFile(path.join(path.dirname(actualFile), newFile));
+      if (!result) {
+        console.log(outputFolder, newFile);
+      }
+      return result;
+    }));
   }
   catch (e) {
     console.error(`problem with file ${absoluteFile} ${actualFile}`);

@@ -4,6 +4,7 @@ import generateWebBrowser from './generate-web-browser.js';
 import generateServer from './generate-server.js';
 import convertPackagesToNodeModulesForApp from './convert-packages-for-app.js';
 import convertPackageToNodeModule from './convert-package.js';
+import testPackages from './test-packages.js';
 import run from './dev-run.js';
 import generateMain from './build-main.js';
 
@@ -70,20 +71,33 @@ program
 
 program
   .command('convert-packages')
-  .option('-p, --packages <package...>', 'the packages to convert')
+  .requiredOption('-p, --packages <package...>', 'the packages to convert')
+  .requiredOption('-o, --outputDirectory <outputDirectory>', 'the output directory')
+  .requiredOption('-m, --meteor <meteorInstall>', 'path to the meteor install')
   .option('-d, --directories <directories...>', 'the prioritized list of directories to search for packages')
-  .option('-o, --outputDirectory <outputDirectory>', 'the output directory')
-  .option('-m, --meteor <meteorInstall>', 'path to the meteor install')
-  .action(async ({ packages: packageNames, directories, outputDirectory, meteor }) => {
-    if (!outputDirectory) {
-      throw new Error('must specify output directory');
-    }
+  .action(async ({
+    packages: packageNames,
+    directories, outputDirectory,
+    meteor,
+  }) => {
     console.log(await convertPackageToNodeModule({
       packageNames,
       outputDirectory,
       directories: directories || [],
       meteorInstall: meteor || `${os.homedir()}/.meteor`,
     }));
+  });
+
+program
+  .command('test-packages')
+  .requiredOption('-p, --packages <package...>', 'the packages to test')
+  .requiredOption('-d, --directory <directory>', 'the directory to run the tests in - should have installed all the dependencies already')
+  .requiredOption('--driver-package <driverPackage>', 'the test driver to use')
+  .action(async ({ directory, packages, driverPackage }) => {
+    await testPackages({ directory, packages, driverPackage });
+    await generateWebBrowser();
+    await generateServer(['web.browser']);
+    await run();
   });
 
 program.parseAsync().catch(console.error);

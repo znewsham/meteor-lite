@@ -4,7 +4,8 @@ import { baseFolder, generateGlobals } from './helpers/command-helpers.js';
 import { convertPackage, packageMap } from './convert-meteor-package-to-npm.js';
 import { meteorNameToNodeName, nodeNameToMeteorName } from './helpers/helpers.js';
 
-async function updateDependenciesForArch(outputDirectory, actualPackages, arch) {
+// TODO: arch we shouldn't enforce that client lives in the client folder.
+export async function updateDependenciesForArch(outputDirectory, actualPackages, arch) {
   const map = await generateGlobals(outputDirectory, actualPackages, arch);
   await fs.writeFile(`./${arch}/dependencies.js`, Array.from(map.entries()).map(([packageName, globals], i) => {
     if (!globals.size) {
@@ -37,6 +38,7 @@ export default async function convertPackagesToNodeModulesForApp({
   ]));
   await Promise.all(allPackages.map((packageName) => convertPackage(packageName, meteorInstall, outputDirectory, ...directories)));
   const actualPackages = appPackages.filter((name) => packageMap.has(name));
+
 
   if (updateDependencies) {
     await Promise.all([

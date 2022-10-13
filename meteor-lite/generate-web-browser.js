@@ -51,7 +51,7 @@ const lessPlugin = {
             contents: result.css,
             loader: 'css',
           };
-          
+
           cacheMap.set(filePath, {
             result: res,
             cacheKey,
@@ -131,6 +131,7 @@ async function buildClient(packageJson) {
       entryPoints: [packageJson.meteor.mainModule.client],
       outfile: `${baseBuildFolder}/web.browser/app.js`,
       external: [
+        '@sinonjs/fake-timers',
         '/packages/*',
         '/images/*',
         '/fonts/*',
@@ -193,16 +194,23 @@ async function linkAssetsOfPackage(packageJson) {
   ];
 }
 
+async function listFilesInPublic() {
+  if (await fsExtra.pathExists('./public')) {
+    await fsExtra.ensureSymlink('./public', `${baseBuildFolder}/web.browser/app`);
+    return (await listFilesInDir('./public')).map((name) => `app/${name.replace(/^public\//, '')}`);
+  }
+  return [];
+}
+
 async function linkAssets(packageJson) {
   if (await fsExtra.pathExists(`${baseBuildFolder}/web.browser/__client.js`)) {
     await fs.unlink(`${baseBuildFolder}/web.browser/__client.js`);
   }
   await Promise.all([
-    fsExtra.ensureSymlink('./public', `${baseBuildFolder}/web.browser/app`),
     fsExtra.ensureSymlink(packageJson.meteor.mainModule.client, `${baseBuildFolder}/web.browser/__client.js`),
   ]);
   return [
-    ...(await listFilesInDir('./public')).map((name) => `app/${name.replace(/^public\//, '')}`),
+    ...await listFilesInPublic(),
     ...await linkAssetsOfPackage(packageJson),
   ];
 }
