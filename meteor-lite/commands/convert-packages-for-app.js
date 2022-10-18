@@ -1,8 +1,8 @@
 import fs from 'fs/promises';
 
-import { baseFolder, generateGlobals } from './helpers/command-helpers.js';
-import { convertPackage, packageMap } from './convert-meteor-package-to-npm.js';
-import { meteorNameToNodeName, nodeNameToMeteorName } from './helpers/helpers.js';
+import { baseFolder, generateGlobals } from '../helpers/command-helpers.js';
+import { convertPackage, packageMap } from '../convert-meteor-package-to-npm.js';
+import { meteorNameToNodeName, nodeNameToMeteorName } from '../helpers/helpers.js';
 
 // TODO: arch we shouldn't enforce that client lives in the client folder.
 export async function updateDependenciesForArch(outputDirectory, actualPackages, arch) {

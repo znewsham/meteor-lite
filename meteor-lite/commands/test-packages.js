@@ -1,12 +1,16 @@
 import fs from 'fs-extra';
-import { readPackageJson } from './helpers/command-helpers';
-import { meteorNameToNodeName } from './helpers/helpers';
+import { readPackageJson } from '../helpers/command-helpers';
+import { meteorNameToNodeName } from '../helpers/helpers';
 
 const staticImports = [
   // hacky fix for issue with underscore loading meteor CJS before something loads meteor ESM.
-  'import "@meteor/meteor"',
+  'import "@meteor/meteor";',
   // hacky fix until we figure out weak deps
-  'import "@meteor/jquery"',
+  'import "@meteor/jquery";',
+  // required for auto-refresh on file change
+  'import "@meteor/hot-code-push";',
+  // required for meteor shell
+  'import "@meteor/shell-server";',
 ].join('\n');
 
 export default async function testPackages({ directory, packages, driverPackage, extraPackages }) {

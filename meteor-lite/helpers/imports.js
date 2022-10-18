@@ -5,7 +5,7 @@ import { walk } from 'estree-walker';
 import { pathExists } from 'fs-extra';
 import { acornOptions } from './globals.js';
 
-async function resolveFile(actualFile) {
+export async function resolveFile(actualFile) {
   if (await pathExists(`${actualFile}.js`)) {
     return `${actualFile}.js`;
   }
@@ -45,6 +45,9 @@ export async function getImportTreeForFile(outputFolder, absoluteFile, arch, arc
 
     const toFind = new Set();
     ast.body.forEach((node) => {
+      if ((node.type === 'ExportNamedDeclaration' || node.type === 'ExportDefaultDeclaration' || node.type === 'ExportAllDeclaration') && node.source && node.source.value.match(/^\.\.?\//)) {
+        toFind.add(node.source.value);
+      }
       if (node.type === 'ImportDeclaration' && node.source.value.match(/^\.\.?\//)) {
         toFind.add(node.source.value);
       }

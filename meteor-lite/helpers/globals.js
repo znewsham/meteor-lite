@@ -7,7 +7,7 @@ import { walk } from 'estree-walker';
 import fsPromises, { readdir } from 'fs/promises';
 import { windowGlobals } from './window-globals.js';
 import { nodeNameToMeteorName } from './helpers.js';
-import { getImportTreeForFile } from './imports.js';
+import { getImportTreeForFile, resolveFile } from './imports.js';
 
 export const acornOptions = {
   ecmaVersion: 2022,
@@ -18,6 +18,7 @@ export const acornOptions = {
 
 // some packages may depend on things that meteor sets up as a global.
 // let's nip that in the bud.
+// TODO: remove
 export const globalStaticImports = new Map([
   ['Meteor', '@meteor/meteor'],
 ]);
@@ -75,38 +76,36 @@ export async function replaceGlobalsInFile(
   outputFolder,
   globals,
   file,
-  importedGlobalsMaps,
+  importedGlobalsByArchMaps,
   isCommon,
   packageGetter,
   archs,
   packageGlobalsSet,
   serverOnlyImportsSet,
 ) {
-  // TODO - this needs to be "isClientServerArch"
-  const multiArch = archs?.size > 1;
-  const arch = archs?.size === 1 ? Array.from(archs)[0] : undefined;
+  const isClientArch = archs && (archs.has('client') || Array.from(archs).find((arch) => arch.startsWith('web.')));
+  const isServerArch = archs && archs.has('server');
+  const isClientServerArch = isClientArch && isServerArch;
+  const isMultiArch = archs?.size > 1;
+  const archName = archs?.size === 1 ? Array.from(archs)[0] : undefined;
   const imports = new Map();
-  const { clientMap, serverMap } = importedGlobalsMaps;
+  const findArchForGlobal = (global) => {
+    const actualArch = Object.values(importedGlobalsByArchMaps).find((archMap) => archMap.has(global));
+    return actualArch;
+  };
   globals.forEach((global) => {
     let from;
-    if (arch === 'client') {
-      if (clientMap.has(global) && !packageGlobalsSet.has(global)) {
-        from = clientMap.get(global);
+    if (importedGlobalsByArchMaps[archName]) {
+      if (importedGlobalsByArchMaps[archName].has(global) && !packageGlobalsSet.has(global)) {
+        from = importedGlobalsByArchMaps[archName].get(global);
       }
       else {
         from = '__globals.js';
       }
     }
-    else if (arch === 'server') {
-      if (serverMap.has(global) && !packageGlobalsSet.has(global)) {
-        from = serverMap.get(global);
-      }
-      else {
-        from = '__globals.js';
-      }
-    }
-    else if ((clientMap.has(global) || serverMap.has(global)) && !packageGlobalsSet.has(global)) {
-      from = clientMap.get(global) || serverMap.get(global);
+    else if (findArchForGlobal(global) && !packageGlobalsSet.has(global)) {
+      // TODO: this is weird
+      from = findArchForGlobal(global).get(global);
     }
     else {
       from = '__globals.js';
@@ -161,7 +160,7 @@ export async function replaceGlobalsInFile(
       }
 
       let useGnarly = false;
-      if (multiArch && !from.match(/^[./]/)) {
+      if (isMultiArch && !from.match(/^[./]/)) {
         const meteorPackage = packageGetter(meteorName);
         if (!meteorPackage) {
           throw new Error(`importing from missing package ${from}`);
@@ -183,7 +182,7 @@ export async function replaceGlobalsInFile(
         file,
         [
           importStr,
-          rewriteFileForPackageGlobals(fileContents, imports.get('__globals.js'), multiArch, serverOnlyImportsSet, file),
+          rewriteFileForPackageGlobals(fileContents, imports.get('__globals.js'), isMultiArch, serverOnlyImportsSet, file),
         ].join('\n'),
       );
     }
@@ -208,7 +207,7 @@ async function getFileList(dirName) {
         ...(await getFileList(path.join(dirName, item.name))),
       ];
     }
-    else if (item.name.endsWith('.js') && !excludeFindImports.has(item.name)) {
+    else if (!excludeFindImports.has(item.name)) {
       files.push(path.join(dirName, item.name));
     }
   }
@@ -228,7 +227,7 @@ function getExportNamedDeclarationNodes(ast) {
   return nodes;
 }
 
-function maybeRewriteImportsOrExports(ast) {
+function maybeRewriteImportsOrExports(ast, debug) {
   // TODO export from
   let ret = false;
   walk(ast, {
@@ -386,6 +385,12 @@ function rewriteExports(ast) {
 }
 
 async function maybeCleanAST(file, isCommon, exportedMap) {
+  if (!file.endsWith('.js')) {
+    const resolvedFile = await resolveFile(file);
+    if (!resolvedFile.endsWith('.js')) {
+      return;
+    }
+  }
   const { ast, requiresCleaning } = await getCleanAST(file);
   const importEntries = new Map();
   const importReplacementPrefix = '_import_require_';
@@ -536,6 +541,9 @@ async function maybeCleanAndGetImportTreeForArch(
 
     // eslint-disable-next-line
     await Promise.all(items.map(async (file) => {
+      if (!file) {
+        return false;
+      }
       const newFiles = await maybeCleanAndGetImportTreeForSingleFile(
         outputFolder,
         file,
@@ -552,29 +560,20 @@ async function maybeCleanAndGetImportTreeForArch(
 
 export async function getImportTreeForPackageAndClean(
   outputFolder,
-  entryPointsForArches,
+  entryPointsForArch,
+  archName,
   archsForFiles,
   isCommon,
   exportedMap,
 ) {
-  return Promise.all([
-    maybeCleanAndGetImportTreeForArch(
-      outputFolder,
-      entryPointsForArches.server,
-      'server',
-      archsForFiles,
-      isCommon,
-      exportedMap,
-    ),
-    maybeCleanAndGetImportTreeForArch(
-      outputFolder,
-      entryPointsForArches.client,
-      'client',
-      archsForFiles,
-      isCommon,
-      exportedMap,
-    ),
-  ]);
+  return maybeCleanAndGetImportTreeForArch(
+    outputFolder,
+    entryPointsForArch,
+    archName,
+    archsForFiles,
+    isCommon,
+    exportedMap,
+  );
 }
 export async function maybeCleanASTs(folder, isCommon, exportedMap) {
   const files = await getFileList(folder);
@@ -591,7 +590,7 @@ export async function maybeCleanASTs(folder, isCommon, exportedMap) {
 
 async function getGlobals(file, map, assignedMap, isCommon) {
   const ast = acorn.parse((await fsPromises.readFile(file)).toString(), acornOptions);
-  const hasRewrittenImportsOrExports = maybeRewriteImportsOrExports(ast);
+  const hasRewrittenImportsOrExports = maybeRewriteImportsOrExports(ast, file.includes('qualia'));
   const scopeManager = analyzeScope(ast, {
     ecmaVersion: 2022,
     sourceType: 'module',
@@ -697,14 +696,14 @@ function replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet, file) {
         const rootImportSource = node.source.value.split('/')[0];
         if (SERVER_ONLY_IMPORTS.has(rootImportSource)) {
           node.__rewritten = true;
-          node.source.value = `#${node.source.value}`;
-          node.source.raw = `'${node.source.value}'`;
           if (rootImportSource !== node.source.value) {
             serverOnlyImportsSet.add(`${rootImportSource}/*`);
           }
           else {
             serverOnlyImportsSet.add(rootImportSource);
           }
+          node.source.value = `#${node.source.value}`;
+          node.source.raw = `'${node.source.value}'`;
         }
       }
     },

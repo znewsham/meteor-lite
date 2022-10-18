@@ -1,4 +1,4 @@
-import { convertPackage, packageMap } from './convert-meteor-package-to-npm.js';
+import { convertPackage, packageMap } from '../convert-meteor-package-to-npm.js';
 
 export default async function convertPackageToNodeModule({
   packageNames,

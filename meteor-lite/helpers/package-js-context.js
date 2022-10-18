@@ -97,6 +97,9 @@ export default function packageJsContext(meteorPackage) {
           name: description.name || meteorPackage.folderName,
           description: description.summary,
           version: description.version,
+          testOnly: description.testOnly,
+          prodOnly: description.prodOnly,
+          devOnly: description.devOnly,
         });
       },
       registerBuildPlugin() {

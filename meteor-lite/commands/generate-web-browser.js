@@ -1,12 +1,12 @@
 import esbuild from 'esbuild';
 import fs from 'fs/promises';
 import fsExtra from 'fs-extra';
-import path from 'path';
 import less from 'less';
 
 import {
   listFilesInDir, generateProgram, baseBuildFolder, ensureBuildDirectory, readPackageJson,
-} from './helpers/command-helpers.js';
+} from '../helpers/command-helpers.js';
+import { meteorNameToLegacyPackageDir, meteorNameToNodePackageDir, nodeNameToMeteorName, ParentArchs } from '../helpers/helpers.js';
 
 let guessStarted = null;
 let totalLessTime = 0;
@@ -55,7 +55,7 @@ const lessPlugin = {
           cacheMap.set(filePath, {
             result: res,
             cacheKey,
-            invalidates: new Set()
+            invalidates: new Set(),
           });
           result.imports.forEach((imp) => {
             cacheMap.get(imp).invalidates.add(filePath);
@@ -100,6 +100,7 @@ const blazePlugin = {
           const result = TemplatingTools.compileTagsWithSpacebars(tags);
           // most app html files don't need this (and can't use it anyway) but package globals aren't global anymore, so we need to import them
           // this happens as part of the conversion for JS, but HTML is compiled OTF.
+          // TODO: move this to a static file
           const needsImport = true; // filePath.includes('/node_modules/') || filePath.includes('/npm-packages/') || filePath.includes('/packages/'); // hack for symlinks
           const importStr = [
             filePath.includes('templating-runtime')
@@ -124,45 +125,57 @@ const blazePlugin = {
   },
 };
 
-async function buildClient(packageJson) {
-  const start = new Date().getTime();
+async function buildClient({
+  archName,
+  packageJson,
+  isProduction,
+  outputBuildFolder,
+  appProcess,
+}) {
   try {
     return await esbuild.build({
-      entryPoints: [packageJson.meteor.mainModule.client],
-      outfile: `${baseBuildFolder}/web.browser/app.js`,
+      minify: isProduction,
+      entryPoints: [packageJson.meteor.mainModule[archName] || packageJson.meteor.mainModule.client],
+      outfile: `${outputBuildFolder}/${archName}/app.js`,
+      conditions: [isProduction ? 'production' : 'development', archName],
       external: [
-        'util',
-        // '@sinonjs/fake-timers',
-        '/packages/*',
-        '/images/*',
+        '*.jpg',
+        '*.png',
+        '*.svg',
         '/fonts/*',
-      ], // css files import from here
+        '/packages/*', // for things like qualia_semantic that hardcode the URL
+      ],
       sourcemap: 'linked',
       logLevel: 'error',
       define: {
         'Meteor.isServer': 'false',
+        'Meteor.isClient': 'true',
         '__package_globals.require': 'require',
       },
       plugins: [blazePlugin, lessPlugin],
       bundle: true,
-      incremental: true,
-      watch: {
-        onRebuild(error, result) {
-          console.log(`   less: `, totalLessTime);
-          console.log(`   html: `, totalHtmlTime);
-          console.log(`   total: `, new Date().getTime() - guessStarted);
-          totalLessTime = 0;
-          totalHtmlTime = 0;
-          guessStarted = null;
+      ...(!isProduction && {
+        incremental: true,
+        watch: {
+          async onRebuild(error, result) {
+            if (appProcess) {
+              await appProcess.pauseClient(archName);
+              await writeProgramJSON(
+                archName,
+                {
+                  isProduction,
+                  packageJson,
+                  outputBuildFolder,
+                },
+              );
+              appProcess.refreshClient(archName);
+            }
+          },
         },
-      },
+      }),
     });
   }
   finally {
-    const time = new Date().getTime() - start;
-    console.log(`esbuild: `, time);
-    console.log(`   less: `, totalLessTime);
-    console.log(`   html: `, totalHtmlTime);
     totalLessTime = 0;
     totalHtmlTime = 0;
   }
@@ -170,7 +183,23 @@ async function buildClient(packageJson) {
 
 const loaded = new Set();
 
-async function loadAndListPackageAssets(dep) {
+function allAssetsForArch(archName, packageJson, ret = []) {
+  if (packageJson.meteor?.assets?.[archName]) {
+    ret.push(...packageJson.meteor.assets[archName]);
+  }
+  if (ParentArchs.has(archName)) {
+    return allAssetsForArch(ParentArchs.get(archName), packageJson, ret);
+  }
+  return ret;
+}
+
+async function loadAndListPackageAssets({
+  archName,
+  dep,
+  isProduction,
+  copyToDestination,
+  outputBuildFolder,
+}) {
   if (loaded.has(dep)) {
     return [];
   }
@@ -179,80 +208,144 @@ async function loadAndListPackageAssets(dep) {
     return [];
   }
   const packageJson = JSON.parse((await fs.readFile(`./node_modules/${dep}/package.json`)).toString());
-  if (packageJson.assets?.client?.length) {
-    await fsExtra.ensureSymlink(`./node_modules/${dep}`, `${baseBuildFolder}/web.browser/packages/${dep.split('/')[1]}`);
+  const assets = allAssetsForArch(archName, packageJson);
+  const folderName = meteorNameToLegacyPackageDir(nodeNameToMeteorName(dep));
+  if (copyToDestination && assets.length) {
+    await fsExtra.ensureDir(`${outputBuildFolder}/${archName}/packages/${folderName}`);
+    await Promise.all(assets.map(async (asset) => {
+      await fsExtra.copy(`./node_modules/${dep}/${asset}`, `${outputBuildFolder}/${archName}/packages/${folderName}/${asset}`);
+    }));
   }
-  return linkAssetsOfPackage(packageJson);
+  else if (assets.length) {
+    await fsExtra.ensureSymlink(`./node_modules/${dep}`, `${outputBuildFolder}/${archName}/packages/${folderName}`);
+  }
+  return linkAssetsOfPackage({
+    archName,
+    packageJson,
+    assetPaths: assets.map((assetPath) => `packages/${folderName}/${assetPath}`),
+    isProduction,
+    copyToDestination,
+    outputBuildFolder,
+  });
 }
 
-async function linkAssetsOfPackage(packageJson) {
+async function linkAssetsOfPackage({
+  archName,
+  packageJson,
+  assetPaths = [],
+  isProduction,
+  copyToDestination,
+  outputBuildFolder,
+}) {
   if (!packageJson.dependencies) {
     return [];
   }
   return [
-    ...(packageJson.assets?.client || []).map((name) => `packages/${packageJson.name.split('/')[1]}/${name}`),
-    ...(await Promise.all(Object.keys(packageJson.dependencies).map((dep) => loadAndListPackageAssets(dep)))).flat(),
+    ...assetPaths,
+    ...(await Promise.all(Object.keys(packageJson.dependencies).map((dep) => loadAndListPackageAssets({
+      archName,
+      dep,
+      isProduction,
+      copyToDestination,
+      outputBuildFolder,
+    })))).flat(),
   ];
 }
 
-async function listFilesInPublic() {
+async function listAndMaybeCopyFilesInPublic({
+  archName,
+  copyToDestination,
+  outputBuildFolder,
+}) {
   if (await fsExtra.pathExists('./public')) {
-    await fsExtra.ensureSymlink('./public', `${baseBuildFolder}/web.browser/app`);
-    return (await listFilesInDir('./public')).map((name) => `app/${name.replace(/^public\//, '')}`);
+    const publicFiles = await listFilesInDir('./public');
+    if (copyToDestination) {
+      await fsExtra.ensureDir(`${outputBuildFolder}/${archName}/app/`);
+      await Promise.all(publicFiles.map(async (fileOrFolder) => fsExtra.copy(
+        fileOrFolder,
+        `${outputBuildFolder}/${archName}/app/${fileOrFolder.replace('public/', '')}`,
+      )));
+    }
+    else {
+      await fsExtra.ensureSymlink('./public', `${outputBuildFolder}/${archName}/app`);
+    }
+    return (publicFiles).map((name) => `app/${name.replace(/^public\//, '')}`);
   }
   return [];
 }
 
-async function linkAssets(packageJson) {
-  if (await fsExtra.pathExists(`${baseBuildFolder}/web.browser/__client.js`)) {
-    await fs.unlink(`${baseBuildFolder}/web.browser/__client.js`);
-  }
-  await Promise.all([
-    fsExtra.ensureSymlink(packageJson.meteor.mainModule.client, `${baseBuildFolder}/web.browser/__client.js`),
-  ]);
+async function linkOrCopyAssets({
+  archName,
+  packageJson,
+  isProduction,
+  copyToDestination = isProduction,
+  outputBuildFolder,
+}) {
   return [
-    ...await listFilesInPublic(),
-    ...await linkAssetsOfPackage(packageJson),
+    ...await listAndMaybeCopyFilesInPublic({
+      archName,
+      copyToDestination,
+      outputBuildFolder,
+    }),
+    ...await linkAssetsOfPackage({
+      archName,
+      packageJson,
+      isProduction,
+      copyToDestination,
+      outputBuildFolder,
+    }),
   ];
 }
 
-export default async function generateWebBrowser() {
-  const packageJson = await readPackageJson();
-  await ensureBuildDirectory('web.browser');
-  let start = new Date().getTime();
-  const assets = await linkAssets(packageJson);
-  console.log('linking: ', (new Date().getTime() - start));
-  await buildClient(packageJson);
+async function writeProgramJSON(
+  archName,
+  {
+    packageJson,
+    isProduction,
+    outputBuildFolder = baseBuildFolder,
+  } = {},
+) {
+  const assets = await linkOrCopyAssets({
+    archName,
+    packageJson,
+    isProduction,
+    outputBuildFolder,
+  });
   const allAssets = [
     {
-      file: `${baseBuildFolder}/web.browser/app.js`,
+      file: `${outputBuildFolder}/${archName}/app.js`,
       path: 'app.js',
       type: 'js',
       where: 'client',
+      // TODO?
       cacheable: true,
+      // TODO?
       replacable: false,
+      // TODO?
       sri: 'KyhHP+B/AM6Nh9FGFPXwbb4bQxAfytYjNxs1s/ZAvC6S1wl3ubMXdcLww+xBBoxlaPRabOmKBFmOsaam4zhxQQ==',
     },
     {
-      file: `${baseBuildFolder}/web.browser/app.js.map`,
+      file: `${outputBuildFolder}/${archName}/app.js.map`,
       path: 'app.js.map',
       type: 'asset',
       where: 'client',
       cacheable: false,
       replacable: false,
     },
-    ...(await fsExtra.pathExists(`${baseBuildFolder}/web.browser/app.css`) ? [
+    ...(await fsExtra.pathExists(`${outputBuildFolder}/${archName}/app.css`) ? [
       {
-        file: `${baseBuildFolder}/web.browser/app.css`,
+        file: `${outputBuildFolder}/${archName}/app.css`,
         path: 'app.css',
         type: 'css',
         where: 'client',
+        // TODO?
         cacheable: true,
+        // TODO?
         replacable: false,
         sri: 'KyhHP+B/AM6Nh9FGFPXwbb4bQxAfytYjNxs1s/ZAvC6S1wl3ubMXdcLww+xBBoxlaPRabOmKBFmOsaam4zhxQQ==',
       },
       {
-        file: `${baseBuildFolder}/web.browser/app.css.map`,
+        file: `${outputBuildFolder}/${archName}/app.css.map`,
         path: 'app.css.map',
         type: 'asset',
         where: 'client',
@@ -261,7 +354,7 @@ export default async function generateWebBrowser() {
       },
     ] : []),
     ...assets.map((asset) => ({
-      file: `${baseBuildFolder}/web.browser/${asset}`,
+      file: `${outputBuildFolder}/${archName}/${asset}`,
       path: asset,
       type: 'asset',
       where: 'client',
@@ -272,6 +365,47 @@ export default async function generateWebBrowser() {
 
   const programJSON = await generateProgram(allAssets);
   const str = JSON.stringify(programJSON, null, 2);
-  await fs.writeFile(`${baseBuildFolder}/web.browser/program.json`, str);
+  await fs.writeFile(`${outputBuildFolder}/${archName}/program.json`, str);
   return str;
+}
+
+export default async function generateWebBrowser(
+  archName,
+  {
+    appProcess,
+    isProduction = false,
+    outputBuildFolder = baseBuildFolder,
+  } = {},
+) {
+  const packageJson = await readPackageJson();
+  await ensureBuildDirectory(archName);
+
+  if (isProduction) {
+
+  }
+  else {
+    if (await fsExtra.pathExists(`${outputBuildFolder}/${archName}/__client.js`)) {
+      await fs.unlink(`${outputBuildFolder}/${archName}/__client.js`);
+    }
+    await fsExtra.ensureSymlink(
+      packageJson.meteor.mainModule[archName] || packageJson.meteor.mainModule.client,
+      `${outputBuildFolder}/${archName}/__client.js`,
+    );
+  }
+  await buildClient({
+    archName,
+    packageJson,
+    isProduction,
+    outputBuildFolder,
+    appProcess,
+  });
+  await writeProgramJSON(
+    archName,
+    {
+      appProcess,
+      isProduction,
+      packageJson,
+      outputBuildFolder,
+    },
+  );
 }

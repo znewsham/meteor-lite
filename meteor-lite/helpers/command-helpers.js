@@ -36,8 +36,8 @@ export async function readPackageJson() {
   return JSON.parse((await fs.readFile('./package.json')).toString());
 }
 
-export async function ensureBuildDirectory(name) {
-  return fsExtra.ensureDir(`${baseBuildFolder}/${name}`);
+export async function ensureBuildDirectory(name, outputBuildFolder = baseBuildFolder) {
+  return fsExtra.ensureDir(`${outputBuildFolder}/${name}`);
 }
 
 export async function listFilesInDir(dir, depthOrBreadth = 'breadth') {

@@ -1,39 +1,40 @@
 import { program } from 'commander';
 import os from 'os';
-import generateWebBrowser from './generate-web-browser.js';
-import generateServer from './generate-server.js';
-import convertPackagesToNodeModulesForApp from './convert-packages-for-app.js';
-import convertPackageToNodeModule from './convert-package.js';
-import testPackages from './test-packages.js';
-import run from './dev-run.js';
-import generateMain from './build-main.js';
+import path from 'path';
+import generateWebBrowser from './commands/generate-web-browser.js';
+import generateServer from './commands/generate-server.js';
+import convertPackagesToNodeModulesForApp from './commands/convert-packages-for-app.js';
+import convertPackageToNodeModule from './commands/convert-package.js';
+import testPackages from './commands/test-packages.js';
+import run from './commands/dev-run.js';
+import generateMain from './commands/build-main.js';
+import prodBuild from './commands/prod-build.js';
+import connect from './commands/shell-client.js';
+import { baseBuildFolder } from './helpers/command-helpers.js';
+
+const DefaultArchs = [
+  'web.browser',
+  'web.browser.legacy',
+];
 
 program
   .version('0.1.0')
   .command('generate-web-browser')
   .action(async () => {
-    console.log(await generateWebBrowser());
+    await Promise.all(DefaultArchs.map((archName) => generateWebBrowser(archName)));
   });
 
 program
   .command('dev-build')
   .action(async () => {
-    await generateWebBrowser();
-    await generateServer(['web.browser']);
+    await Promise.all(DefaultArchs.map((archName) => generateWebBrowser(archName)));
+    await generateServer(DefaultArchs);
   });
 
 program
   .command('dev-run')
   .action(async () => {
-    let start = new Date().getTime();
-    await generateWebBrowser();
-    let end = new Date().getTime();
-    console.log("web browser", end - start);
-    start = end;
-    await generateServer(['web.browser']);
-    end = new Date().getTime();
-    console.log("server", end - start);
-    await run();
+    await run(DefaultArchs);
   });
 
 program
@@ -52,7 +53,11 @@ program
   .option('-u, --update', 'update the dependencies.js file?')
   .option('-m, --meteor <meteorInstall>', 'path to the meteor install')
   .action(async ({
-    packages = [], directories, outputDirectory, update, meteor
+    packages = [],
+    directories,
+    outputDirectory,
+    update,
+    meteor,
   }) => {
     if (!directories) {
       throw new Error('must specify search directories');
@@ -94,11 +99,32 @@ program
   .requiredOption('-d, --directory <directory>', 'the directory to run the tests in - should have installed all the dependencies already')
   .option('-d, --extra-packages <extraPackages...>', 'any extra packages to load')
   .requiredOption('--driver-package <driverPackage>', 'the test driver to use')
-  .action(async ({ directory, packages, driverPackage, extraPackages }) => {
-    await testPackages({ directory, packages, driverPackage, extraPackages });
-    await generateWebBrowser();
-    await generateServer(['web.browser']);
-    await run();
+  .action(async ({
+    directory, packages, driverPackage, extraPackages,
+  }) => {
+    await testPackages({
+      directory, packages, driverPackage, extraPackages,
+    });
+    await run(DefaultArchs);
+  });
+
+program
+  .command('shell')
+  .action(() => {
+    const shellDir = path.resolve(path.join(baseBuildFolder, 'shell'));
+    connect(shellDir);
+  });
+
+program
+  .command('build')
+  .requiredOption('-d, --directory <directory>', 'the output directory')
+  .action(async ({
+    directory,
+  }) => {
+    await prodBuild({
+      directory,
+      archs: DefaultArchs,
+    });
   });
 
 program.parseAsync().catch(console.error);
