@@ -1,5 +1,5 @@
 import fsPromises from 'fs/promises';
-import { listFilesInDir } from '../helpers/command-helpers';
+import { listFilesInDir } from './helpers/command-helpers';
 
 const excludes = new Set(['pre-boot.js', 'main.js', 'dependencies.js']);
 

@@ -3,14 +3,14 @@ import os from 'os';
 import path from 'path';
 import generateWebBrowser from './commands/generate-web-browser.js';
 import generateServer from './commands/generate-server.js';
-import convertPackagesToNodeModulesForApp from './commands/convert-packages-for-app.js';
-import convertPackageToNodeModule from './commands/convert-package.js';
+import convertPackagesForApp from './commands/convert-packages-for-app.js';
+import convertPackage from './commands/convert-package.js';
 import testPackages from './commands/test-packages.js';
 import run from './commands/dev-run.js';
 import generateMain from './commands/build-main.js';
 import prodBuild from './commands/prod-build.js';
 import connect from './commands/shell-client.js';
-import { baseBuildFolder } from './helpers/command-helpers.js';
+import { baseBuildFolder } from './commands/helpers/command-helpers.js';
 
 const DefaultArchs = [
   'web.browser',
@@ -67,7 +67,7 @@ program
     if (!outputDirectory) {
       throw new Error('must specify output directory');
     }
-    console.log(await convertPackagesToNodeModulesForApp({
+    console.log(await convertPackagesForApp({
       extraPackages: packages,
       outputDirectory,
       directories,
@@ -90,7 +90,7 @@ program
     meteor,
     forceRefresh,
   }) => {
-    console.log(await convertPackageToNodeModule({
+    console.log(await convertPackage({
       packageNames,
       outputDirectory,
       directories: directories || [],

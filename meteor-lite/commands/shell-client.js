@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as net from 'net';
 import chalk from 'chalk';
 import { EOL } from 'os';
-import { eachline } from './utils/eachline';
+import { eachline } from '../utils/eachline';
 
 function isEmacs() {
   return false;

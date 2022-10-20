@@ -1,9 +1,9 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import fsExtra from 'fs-extra';
-import { baseBuildFolder } from '../helpers/command-helpers';
-import generateServer, { generateConfigJson } from './generate-server';
-import generateWebBrowser from './generate-web-browser';
+import { baseBuildFolder } from './helpers/command-helpers';
+import generateServer, { generateConfigJson } from './helpers/generate-server';
+import generateWebBrowser from './helpers/generate-web-browser';
 
 class AppProcess {
   constructor(archs) {
@@ -85,8 +85,26 @@ class AppProcess {
 
 export default async function run(archs) {
   const appProcess = new AppProcess(archs);
-  await Promise.all(archs.map((archName) => generateWebBrowser(archName, { appProcess })));
-  await generateServer(archs, { appProcess });
+  let start = new Date().getTime();
+  await Promise.all(archs.map((archName) => generateWebBrowser(
+    archName,
+    {
+      appProcess,
+      isProduction: false,
+      outputBuildFolder: baseBuildFolder,
+    },
+  )));
+  console.log('web browser', (new Date().getTime() - start) / 1000);
+  start = new Date().getTime();
+  await generateServer(
+    archs,
+    {
+      appProcess,
+      isProduction: false,
+      outputBuildFolder: baseBuildFolder,
+    },
+  );
+  console.log('server', (new Date().getTime() - start) / 1000);
   await appProcess.spawn();
   return appProcess;
 }

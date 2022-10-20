@@ -194,28 +194,6 @@ export async function replaceGlobalsInFile(
   }
 }
 
-async function getFileList(dirName) {
-  let files = [];
-  const items = await readdir(dirName, { withFileTypes: true });
-
-  for (const item of items) {
-    if (excludeFolders.has(item.name)) {
-      continue;
-    }
-    if (item.isDirectory()) {
-      files = [
-        ...files,
-        ...(await getFileList(path.join(dirName, item.name))),
-      ];
-    }
-    else if (!excludeFindImports.has(item.name)) {
-      files.push(path.join(dirName, item.name));
-    }
-  }
-
-  return files;
-}
-
 function getExportNamedDeclarationNodes(ast) {
   const nodes = [];
   walk(ast, {
@@ -228,7 +206,7 @@ function getExportNamedDeclarationNodes(ast) {
   return nodes;
 }
 
-function maybeRewriteAwait(ast, infoOnly,  debug) {
+function maybeRewriteAwait(ast, infoOnly, debug) {
   let ret = false;
   walk(ast, {
     enter(node) {
@@ -281,6 +259,36 @@ function maybeRewriteRequire(ast, debug) {
           node.arguments[0].value = `@${node.arguments[0].value}`;
         }
         node.arguments[0].raw = `"${node.arguments[0].value}"`;
+      }
+    },
+  });
+  return ret;
+}
+
+const contextChangingTypes = new Set([
+  'ArrowFunctionExpression',
+  'FunctionExpression',
+  'FunctionDeclaration',
+  // TODO: where else would `this` be valid?
+]);
+function maybeRewriteGlobalThis(ast, debug) {
+  let ret = false;
+  const currentContext = [ast];
+  walk(ast, {
+    enter(node) {
+      if (contextChangingTypes.has(node.type)) {
+        currentContext.push(node);
+      }
+      if (node.type === 'ThisExpression' && currentContext.length === 1) {
+        node.__rewritten = true;
+        node.type = 'Identifier';
+        node.name = 'globalThis';
+        ret = true;
+      }
+    },
+    leave(node) {
+      if (currentContext[currentContext.length - 1] === node) {
+        currentContext.pop();
       }
     },
   });
@@ -640,6 +648,7 @@ async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
   const ast = acorn.parse((await fsPromises.readFile(file)).toString(), acornOptions);
   const hasRewrittenImportsOrExports = maybeRewriteImportsOrExports(ast);
   const hasRewrittenRequires = maybeRewriteRequire(ast);
+  const hasGlobalThis = maybeRewriteGlobalThis(ast);
   let hasRewrittenAwait = false;
   if (archsForFile.has('server')) {
     hasRewrittenAwait = maybeRewriteAwait(ast, archsForFile.size !== 1);
@@ -687,40 +696,7 @@ async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
   }));
   map.set(file, all);
   assignedMap.set(file, assigned);
-  /*if (requiresCleaning && all.size) {
-    map.set(file, all);
-    Array.from(all).forEach((packageGlobal) => {
-      exportNamedDeclarationNodes.some(({ node, parent }) => {
-        const found = node.specifiers.find(({ exported, local }) => exported.name === local.name && exported.name === packageGlobal);
-        if (found) {
-          found.local.name = `_${packageGlobal}`;
-          if (!parent.body) {
-            throw new Error('bad parent');
-          }
-          fixed = true;
-          const nodeIndex = parent.body.indexOf(node);
-          parent.body.splice(nodeIndex, 0, {
-            type: 'VariableDeclaration',
-            kind: 'const',
-            declarations: [{
-              type: 'VariableDeclarator',
-              id: {
-                type: 'Identifier',
-                name: `_${packageGlobal}`,
-              },
-              init: {
-                type: 'Identifier',
-                name: packageGlobal,
-              },
-            }],
-          });
-          return true;
-        }
-        return false;
-      });
-    });
-  }*/
-  if (hasRewrittenImportsOrExports || hasRewrittenRequires || hasRewrittenAwait) {
+  if (hasRewrittenImportsOrExports || hasRewrittenRequires || hasRewrittenAwait || hasGlobalThis) {
     await fsPromises.writeFile(file, generate(ast));
   }
 }

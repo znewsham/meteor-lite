@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { meteorNameToNodeName } from './helpers';
+import { meteorNameToNodeName } from '../../helpers/helpers';
 
 // leaving this in for posterity - it didn't work, but would have been cleaner.
 // the advantage of the chosen solution is it should be possible to garuantee the exact same load order

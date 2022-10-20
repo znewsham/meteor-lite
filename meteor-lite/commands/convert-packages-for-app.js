@@ -1,9 +1,9 @@
 import fs from 'fs/promises';
 
-import { baseFolder, generateGlobals } from '../helpers/command-helpers.js';
+import { baseFolder, generateGlobals } from './helpers/command-helpers.js';
 import { convertPackage, packageMap } from '../convert-meteor-package-to-npm.js';
 import { meteorNameToNodeName, nodeNameToMeteorName } from '../helpers/helpers.js';
-import { getFinalPackageListForArch } from '../helpers/final-package-list';
+import { getFinalPackageListForArch } from './helpers/final-package-list';
 
 const archsToConditions = {
   'web.browser': 'Meteor.isModern',

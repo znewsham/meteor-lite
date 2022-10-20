@@ -1,10 +1,3 @@
-export const ParentArchs = new Map([
-  ['web.browser.legacy', 'web.browser'],
-  ['web.browser', 'web'],
-  ['web.cordova', 'web.browser.legacy'],
-  ['web', 'client'],
-]);
-
 export function meteorNameToNodeName(name) {
   if (name.includes(':')) {
     return `@${name.split(':').join('/')}`;

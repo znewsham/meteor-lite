@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import crypto from 'crypto';
 import fsExtra from 'fs-extra';
 import path from 'path';
-import { meteorNameToNodePackageDir, nodeNameToMeteorName } from './helpers.js';
+import { meteorNameToNodePackageDir, nodeNameToMeteorName } from '../../helpers/helpers.js';
 
 export const baseFolder = './.meteor';
 export const baseBuildFolder = `${baseFolder}/local`;

@@ -1,6 +1,6 @@
 import fs from 'fs-extra';
-import { readPackageJson } from '../helpers/command-helpers';
-import { getFinalPackageListForArch } from '../helpers/final-package-list';
+import { readPackageJson } from './helpers/command-helpers';
+import { getFinalPackageListForArch } from './helpers/final-package-list';
 import { meteorNameToNodeName } from '../helpers/helpers';
 
 // it's possible these should just be handled by the existing extraPackages argument.
