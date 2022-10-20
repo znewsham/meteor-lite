@@ -51,6 +51,7 @@ class AppProcess {
       'node',
       [
         '--inspect',
+        '--no-wasm-code-gc', //TODO  hack
         '--experimental-specifier-resolution=node',
         '.meteor/local/server/main.js',
         '.meteor/local/server/config.json',

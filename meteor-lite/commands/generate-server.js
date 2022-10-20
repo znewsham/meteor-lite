@@ -84,7 +84,7 @@ async function buildServer({
     while (queue.length) {
       const files = queue.splice(0, queue.length);
       // eslint-disable-next-line
-      await esbuild.build({
+      const build = await esbuild.build({
         entryPoints: files,
         outbase: './',
         platform: 'node',
@@ -101,7 +101,6 @@ async function buildServer({
           '__package_globals.require': 'require',
         },
         ...(!isProduction && appProcess !== undefined && {
-          incremental: true,
           watch: {
             onRebuild,
           },

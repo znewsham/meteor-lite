@@ -52,12 +52,14 @@ program
   .option('-o, --outputDirectory <outputDirectory>', 'the output directory')
   .option('-u, --update', 'update the dependencies.js file?')
   .option('-m, --meteor <meteorInstall>', 'path to the meteor install')
+  .option('-f, --force-refresh', 'update all package dependencies, even if they\'re already converted')
   .action(async ({
     packages = [],
     directories,
     outputDirectory,
     update,
     meteor,
+    forceRefresh,
   }) => {
     if (!directories) {
       throw new Error('must specify search directories');
@@ -71,6 +73,7 @@ program
       directories,
       updateDependencies: update,
       meteorInstall: meteor || `${os.homedir()}/.meteor`,
+      forceRefresh,
     }));
   });
 
@@ -80,16 +83,19 @@ program
   .requiredOption('-o, --outputDirectory <outputDirectory>', 'the output directory')
   .requiredOption('-m, --meteor <meteorInstall>', 'path to the meteor install')
   .option('-d, --directories <directories...>', 'the prioritized list of directories to search for packages')
+  .option('-f, --force-refresh', 'update all package dependencies, even if they\'re already converted')
   .action(async ({
     packages: packageNames,
     directories, outputDirectory,
     meteor,
+    forceRefresh,
   }) => {
     console.log(await convertPackageToNodeModule({
       packageNames,
       outputDirectory,
       directories: directories || [],
       meteorInstall: meteor || `${os.homedir()}/.meteor`,
+      forceRefresh,
     }));
   });
 

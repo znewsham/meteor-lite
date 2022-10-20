@@ -7,16 +7,28 @@ import { meteorNameToNodePackageDir, nodeNameToMeteorName } from './helpers.js';
 export const baseFolder = './.meteor';
 export const baseBuildFolder = `${baseFolder}/local`;
 
-async function getPackageExports(outputDirectory, meteorPackageName, clientOrServer, map) {
+async function getPackageExports(outputDirectory, meteorPackageName, clientOrServer, map, conditionalMap) {
   try {
     if (!map.has(meteorPackageName)) {
       map.set(meteorPackageName, new Set());
     }
     const packageJson = JSON.parse((await fs.readFile(path.join(path.resolve(outputDirectory), meteorNameToNodePackageDir(meteorPackageName), 'package.json'))).toString());
-    if (packageJson.implies[clientOrServer]?.length) {
-      await Promise.all(packageJson.implies[clientOrServer].map((packageName) => getPackageExports(outputDirectory, nodeNameToMeteorName(packageName), clientOrServer, map)));
+    if (packageJson.meteorTmp?.implies?.[clientOrServer]?.length) {
+      await Promise.all(packageJson.meteorTmp.implies[clientOrServer].map((packageName) => getPackageExports(outputDirectory, nodeNameToMeteorName(packageName), clientOrServer, map, conditionalMap)));
     }
-    (packageJson.exportedVars?.[clientOrServer] || []).forEach((name) => map.get(meteorPackageName).add(name));
+    (packageJson.meteorTmp?.exportedVars?.[clientOrServer] || []).forEach((name) => map.get(meteorPackageName).add(name));
+    if (clientOrServer === 'client') {
+      const webArchs = ['web.browser', 'web.browser.legacy'];
+      const exportsForWebArchs = webArchs.map((webArchName) => packageJson.meteorTmp?.exportedVars?.[webArchName] || []);
+      exportsForWebArchs.forEach((exp, index) => {
+        if (exp.length) {
+          if (!conditionalMap.has(meteorPackageName)) {
+            conditionalMap.set(meteorPackageName, new Map());
+          }
+          conditionalMap.get(meteorPackageName).set(webArchs[index], exp);
+        }
+      });
+    }
   }
   catch (e) {
     console.error(new Error(`problem with package ${meteorPackageName}`));
@@ -27,9 +39,10 @@ async function getPackageExports(outputDirectory, meteorPackageName, clientOrSer
 
 export async function generateGlobals(outputDirectory, packages, clientOrServer) {
   const map = new Map();
+  const conditionalMap = new Map();
   const meteorPackages = packages;
-  await Promise.all(meteorPackages.map((packageName) => getPackageExports(outputDirectory, packageName, clientOrServer, map)));
-  return map;
+  await Promise.all(meteorPackages.map((packageName) => getPackageExports(outputDirectory, packageName, clientOrServer, map, conditionalMap)));
+  return { map, conditionalMap };
 }
 
 export async function readPackageJson() {

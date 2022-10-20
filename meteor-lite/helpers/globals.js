@@ -6,7 +6,7 @@ import { generate } from 'astring';
 import { walk } from 'estree-walker';
 import fsPromises, { readdir } from 'fs/promises';
 import { windowGlobals } from './window-globals.js';
-import { nodeNameToMeteorName } from './helpers.js';
+import { meteorNameToNodeName, nodeNameToMeteorName } from './helpers.js';
 import { getImportTreeForFile, resolveFile } from './imports.js';
 
 export const acornOptions = {
@@ -21,6 +21,7 @@ export const acornOptions = {
 // TODO: remove
 export const globalStaticImports = new Map([
   ['Meteor', '@meteor/meteor'],
+  ['global', '@meteor/meteor'],
 ]);
 
 const excludeFindImports = new Set([
@@ -225,6 +226,65 @@ function getExportNamedDeclarationNodes(ast) {
     },
   });
   return nodes;
+}
+
+function maybeRewriteAwait(ast, infoOnly,  debug) {
+  let ret = false;
+  walk(ast, {
+    enter(node) {
+      // require('meteor/whatever')
+      if (
+        node.type === 'AwaitExpression'
+      ) {
+        ret = true;
+        if (!infoOnly) {
+          node.__rewritten = true;
+          node.type = 'CallExpression';
+          node.callee = {
+            type: 'MemberExpression',
+            object: {
+              type: 'Identifier',
+              name: 'Promise',
+            },
+            property: {
+              type: 'Identifier',
+              name: 'await',
+            },
+          };
+          node.arguments = [node.argument];
+        }
+      }
+    },
+  });
+  return ret;
+}
+
+function maybeRewriteRequire(ast, debug) {
+  let ret = false;
+  walk(ast, {
+    enter(node) {
+      // require('meteor/whatever')
+      if (
+        node.type === 'CallExpression'
+        && node.callee.type === 'Identifier'
+        && node.callee.name === 'require'
+        && node.arguments.length === 1
+        && node.arguments[0].type === 'Literal'
+        && node.arguments[0].value.startsWith('meteor/')
+      ) {
+        ret = true;
+        node.__rewritten = true;
+        if (node.arguments[0].value.includes(':')) {
+          node.arguments[0].value = `@${node.arguments[0].value.replace('meteor/', '').split(':').join('/')}`;
+        }
+        else {
+          node.arguments[0].value = `@${node.arguments[0].value}`;
+        }
+        node.arguments[0].raw = `"${node.arguments[0].value}"`;
+      }
+    },
+  });
+  return ret;
 }
 
 function maybeRewriteImportsOrExports(ast, debug) {
@@ -434,7 +494,7 @@ async function maybeCleanAST(file, isCommon, exportedMap) {
           && node.arguments.length === 1
           && node.arguments[0].type === 'Literal'
         ) {
-          if (blockDepth !== 0) {
+          if (blockDepth !== 0 || isCommon) {
             hasRequires = true;
             return;
           }
@@ -444,7 +504,7 @@ async function maybeCleanAST(file, isCommon, exportedMap) {
             importEntry = importEntries.get(importPath);
           }
           else {
-            const name = `${importReplacementPrefix}_${importEntries.size + 1}`;
+            const name = `${importReplacementPrefix}${importEntries.size + 1}`;
             importEntry = {
               name,
               node: {
@@ -575,22 +635,18 @@ export async function getImportTreeForPackageAndClean(
     exportedMap,
   );
 }
-export async function maybeCleanASTs(folder, isCommon, exportedMap) {
-  const files = await getFileList(folder);
-  await Promise.all(files.map(async (file) => {
-    try {
-      await maybeCleanAST(file, isCommon, exportedMap);
-    }
-    catch (e) {
-      console.log('error with', file);
-      throw e;
-    }
-  }));
-}
 
-async function getGlobals(file, map, assignedMap, isCommon) {
+async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
   const ast = acorn.parse((await fsPromises.readFile(file)).toString(), acornOptions);
-  const hasRewrittenImportsOrExports = maybeRewriteImportsOrExports(ast, file.includes('qualia'));
+  const hasRewrittenImportsOrExports = maybeRewriteImportsOrExports(ast);
+  const hasRewrittenRequires = maybeRewriteRequire(ast);
+  let hasRewrittenAwait = false;
+  if (archsForFile.has('server')) {
+    hasRewrittenAwait = maybeRewriteAwait(ast, archsForFile.size !== 1);
+    if (hasRewrittenAwait && archsForFile.size !== 1) {
+      console.warn(`file ${file} used on both client and server required Promise.await conversion, this probably isn't gonna work (we left it alone)`);
+    }
+  }
   const scopeManager = analyzeScope(ast, {
     ecmaVersion: 2022,
     sourceType: 'module',
@@ -664,17 +720,18 @@ async function getGlobals(file, map, assignedMap, isCommon) {
       });
     });
   }*/
-  if (hasRewrittenImportsOrExports) {
+  if (hasRewrittenImportsOrExports || hasRewrittenRequires || hasRewrittenAwait) {
     await fsPromises.writeFile(file, generate(ast));
   }
 }
 
-export async function getPackageGlobals(isCommon, files) {
+export async function getPackageGlobals(isCommon, outputFolder, archsForFiles) {
   const map = new Map();
   const assignedMap = new Map();
+  const files = Array.from(archsForFiles.keys());
   await Promise.all(files.map((file) => {
     try {
-      return getGlobals(file, map, assignedMap, isCommon);
+      return getGlobals(path.join(outputFolder, file), map, assignedMap, isCommon, archsForFiles.get(file));
     }
     catch (e) {
       console.log('error with', file);

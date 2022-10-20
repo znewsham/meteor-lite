@@ -54,9 +54,6 @@ export async function getImportTreeForFile(outputFolder, absoluteFile, arch, arc
     });
     return Promise.all(Array.from(toFind).map(async (newFile) => {
       const result = await resolveFile(path.join(path.dirname(actualFile), newFile));
-      if (!result) {
-        console.log(outputFolder, newFile);
-      }
       return result;
     }));
   }

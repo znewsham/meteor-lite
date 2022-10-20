@@ -14,6 +14,10 @@ export default class MeteorArch {
 
   #impliedPackages = new Set();
 
+  #preloadPackages = new Set();
+
+  #unorderedPackages = new Set();
+
   #mainModule;
 
   #assets = [];
@@ -43,6 +47,16 @@ export default class MeteorArch {
     this.#modified = true;
   }
 
+  addPreloadPackage(nodeName) {
+    this.#preloadPackages.add(nodeName);
+    this.#modified = true;
+  }
+
+  addUnorderedPackage(nodeName) {
+    this.#unorderedPackages.add(nodeName);
+    this.#modified = true;
+  }
+
   addImpliedPackage(nodeName) {
     this.#imports.add(nodeName);
     this.#impliedPackages.add(nodeName);
@@ -52,6 +66,20 @@ export default class MeteorArch {
   setMainModule(filePath) {
     this.#mainModule = filePath;
     this.#modified = true;
+  }
+
+  getPreloadPackages(justOwn = false) {
+    if (justOwn) {
+      return this.#preloadPackages;
+    }
+    return new Set([...this.#parentArch?.getPreloadPackages() || [], ...this.#preloadPackages]);
+  }
+
+  getUnorderedPackages(justOwn = false) {
+    if (justOwn) {
+      return this.#unorderedPackages;
+    }
+    return new Set([...this.#parentArch?.getUnorderedPackages() || [], ...this.#unorderedPackages]);
   }
 
   getImports(justOwn = false) {
@@ -72,7 +100,7 @@ export default class MeteorArch {
     if (justOwn) {
       return this.#exports;
     }
-    return [...this.#parentArch?.getExports() || [], ...this.#exports];
+    return Array.from(new Set([...this.#parentArch?.getExports() || [], ...this.#exports]));
   }
 
   getAssets(justOwn = false) {

@@ -1,47 +1,50 @@
 import fs from 'fs-extra';
 import { readPackageJson } from '../helpers/command-helpers';
+import { getFinalPackageListForArch } from '../helpers/final-package-list';
 import { meteorNameToNodeName } from '../helpers/helpers';
 
+// it's possible these should just be handled by the existing extraPackages argument.
 const staticImports = [
-  // hacky fix for issue with underscore loading meteor CJS before something loads meteor ESM.
-  'import "@meteor/meteor";',
-  // hacky fix until we figure out weak deps
-  'import "@meteor/jquery";',
+  // uggggh - this just has to be first, so annoying
+  'meteor',
   // required for auto-refresh on file change
-  'import "@meteor/hot-code-push";',
+  'hot-code-push',
   // required for meteor shell
-  'import "@meteor/shell-server";',
-].join('\n');
+  'shell-server',
+];
 
-export default async function testPackages({ directory, packages, driverPackage, extraPackages }) {
+function dependenciesToString(packages) {
+  return packages.map(({ nodeName, isLazy }) => {
+    if (isLazy) {
+      return `import "${nodeName}/__defineOnly.js";`;
+    }
+    return `import "${nodeName}";`;
+  }).join('\n');
+}
+
+export default async function testPackages({ directory, packages, driverPackage, extraPackages = [] }) {
   process.chdir(directory);
   const packageJson = await readPackageJson();
   const { client: clientMain, server: serverMain } = packageJson.meteor.mainModule;
 
   // TODO: remove hardcoded package.json - maybe instead can use require.resolve or similar to just grab the package.json
+  const allPackages = [
+    ...staticImports,
+    ...packages,
+    ...extraPackages,
+    driverPackage,
+  ];
 
-  const dependencies = [
-    ...packages.map((aPackage) => {
-      if (aPackage.startsWith('@')) {
-        return aPackage;
-      }
-      return meteorNameToNodeName(aPackage);
-    }).map((aPackage) => `import "${aPackage}/__test.js"`),
-    ...(extraPackages || []).map((aPackage) => {
-      if (aPackage.startsWith('@')) {
-        return aPackage;
-      }
-      return meteorNameToNodeName(aPackage);
-    }).map((aPackage) => `import "${aPackage}"`),
-  ].join('\n');
-
+  const underTestString = packages.map((packageName) => `import "${meteorNameToNodeName(packageName)}/__test.js";`).join('\n');
+  const serverPackages = await getFinalPackageListForArch(allPackages, 'server');
+  const clientPackages = await getFinalPackageListForArch(allPackages, 'client');
   await fs.writeFile(
     clientMain,
-    `${staticImports}\n${dependencies}\nimport "${driverPackage}";\nrunTests();`,
+    `${dependenciesToString(clientPackages)}\n${underTestString}\nrunTests();`,
   );
 
   await fs.writeFile(
     serverMain,
-    `${staticImports}\n${dependencies}\nimport "${driverPackage}";`,
+    `${dependenciesToString(serverPackages)}\n${underTestString}`,
   );
 }

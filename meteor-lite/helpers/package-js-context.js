@@ -65,9 +65,9 @@ function callbackWrapper(meteorPackage, cb, isTest = false) {
         meteorPackage.addImport(`./${file}`, archs, { testOnly: isTest });
       });
     },
-    mainModule(file, archOrArchs) {
+    mainModule(file, archOrArchs, opts) {
       const archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
-      meteorPackage.setMainModule(file, archs, { testOnly: isTest });
+      meteorPackage.setMainModule(file, archs, { ...opts, testOnly: isTest });
     },
   });
 }
