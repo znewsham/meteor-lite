@@ -190,7 +190,7 @@ function onStart(onStartHandler) {
     setup(build) {
       build.onStart((...args) => {
         const arch = build.initialOptions.conditions.slice(-1)[0];
-        console.log('build started', arch);
+        console.log('build started', arch, build.initialOptions.entryPoints);
         weakMap.set(arch, new Date());
         if (onStartHandler) {
           onStartHandler(build, ...args);
@@ -206,7 +206,7 @@ function onEnd(onEndHandler) {
       build.onEnd((...args) => {
         const arch = build.initialOptions.conditions.slice(-1)[0];
         const start = weakMap.get(arch);
-        console.log('build ended', arch, (new Date().getTime() - start.getTime()) / 1000);
+        console.log('build ended', arch, build.initialOptions.entryPoints, (new Date().getTime() - start.getTime()) / 1000);
         if (onEndHandler) {
           onEndHandler(build, ...args);
         }
@@ -222,12 +222,18 @@ async function buildClient({
   outputBuildFolder,
   appProcess,
 }) {
+  const entryPoint = packageJson.meteor.mainModule[archName] || packageJson.meteor.mainModule.client;
+  const outdir = `${outputBuildFolder}/${archName}`;
+  let isRoot = true;
+  let isInitial = true;
+  let rootBuild;
   const cacheDirectory = path.resolve(path.join(outputBuildFolder, 'cache'));
   await fsExtra.ensureDir(cacheDirectory);
+  // eslint-disable-next-line
   const build = await esbuild.build({
     minify: isProduction,
-    entryPoints: [packageJson.meteor.mainModule[archName] || packageJson.meteor.mainModule.client],
-    outfile: `${outputBuildFolder}/${archName}/app.js`,
+    entryPoints: [entryPoint],
+    outdir,
     conditions: [isProduction ? 'production' : 'development', archName],
     external: [
       '*.jpg',
@@ -250,14 +256,21 @@ async function buildClient({
       blazePlugin(cacheDirectory),
       lessPlugin(cacheDirectory),
       onStart(async () => {
+        if (isInitial) {
+          return;
+        }
         if (appProcess) {
           await appProcess.pauseClient(archName);
         }
       }),
-      onEnd(async () => {
+      onEnd(async (build, result) => {
+        if (isInitial) {
+          return;
+        }
         await writeProgramJSON(
           archName,
           {
+            outputs: Object.keys(result.metafile.outputs),
             isProduction,
             packageJson,
             outputBuildFolder,
@@ -268,9 +281,15 @@ async function buildClient({
         }
       }),
     ],
+    splitting: archName === 'web.browser',
     bundle: true,
+    format: archName === 'web.browser' ? 'esm' : 'iife',
     watch: !isProduction,
+    incremental: !isProduction,
+    metafile: true,
   });
+  isInitial = false;
+  return Object.keys(build.metafile.outputs);
 }
 
 function allAssetsForArch(archName, packageJson, ret = []) {
@@ -396,6 +415,7 @@ async function linkOrCopyAssets({
 async function writeProgramJSON(
   archName,
   {
+    outputs = [],
     packageJson,
     isProduction,
     outputBuildFolder,
@@ -408,45 +428,31 @@ async function writeProgramJSON(
     outputBuildFolder,
   });
   const allAssets = [
-    {
-      file: `${outputBuildFolder}/${archName}/app.js`,
-      path: 'app.js',
-      type: 'js',
-      where: 'client',
-      // TODO?
-      cacheable: true,
-      // TODO?
-      replacable: false,
-      // TODO?
-      sri: 'KyhHP+B/AM6Nh9FGFPXwbb4bQxAfytYjNxs1s/ZAvC6S1wl3ubMXdcLww+xBBoxlaPRabOmKBFmOsaam4zhxQQ==',
-    },
-    {
-      file: `${outputBuildFolder}/${archName}/app.js.map`,
-      path: 'app.js.map',
-      type: 'asset',
-      where: 'client',
-      cacheable: false,
-      replacable: false,
-    },
-    ...(await fsExtra.pathExists(`${outputBuildFolder}/${archName}/app.css`) ? [
-      {
-        file: `${outputBuildFolder}/${archName}/app.css`,
-        path: 'app.css',
-        type: 'css',
+    ...outputs.map((file) => {
+      let type;
+      if (file.endsWith('.map')) {
+        type = 'asset';
+      }
+      else if (file.endsWith('.js')) {
+        if (file.endsWith('main.js')) {
+          type = 'module js';
+        }
+        else {
+          type = 'dynamic js';
+        }
+      }
+      else {
+        type = file.split('.').slice(-1)[0];
+      }
+      return {
+        file,
+        path: file.replace(path.join(outputBuildFolder.replace(/^\.\//, ''), archName) + "/", ''),
         where: 'client',
+        type,
         cacheable: true,
         replacable: false,
-        sri: 'KyhHP+B/AM6Nh9FGFPXwbb4bQxAfytYjNxs1s/ZAvC6S1wl3ubMXdcLww+xBBoxlaPRabOmKBFmOsaam4zhxQQ==',
-      },
-      {
-        file: `${outputBuildFolder}/${archName}/app.css.map`,
-        path: 'app.css.map',
-        type: 'asset',
-        where: 'client',
-        cacheable: false,
-        replacable: false,
-      },
-    ] : []),
+      };
+    }),
     ...assets.map((asset) => ({
       file: `${outputBuildFolder}/${archName}/${asset}`,
       path: asset,
@@ -486,7 +492,7 @@ export default async function generateWebBrowser(
       `${outputBuildFolder}/${archName}/__client.js`,
     );
   }
-  await buildClient({
+  const outputs = await buildClient({
     archName,
     packageJson,
     isProduction,
@@ -496,6 +502,7 @@ export default async function generateWebBrowser(
   await writeProgramJSON(
     archName,
     {
+      outputs,
       appProcess,
       isProduction,
       packageJson,

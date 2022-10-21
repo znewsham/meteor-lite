@@ -82,7 +82,7 @@ export async function getProgramEntry(asset) {
     hash,
     size: buffer.length,
     ...remainderOfAsset,
-    url: `/${remainderOfAsset.cacheable ? `${remainderOfAsset.path.replace(/^app\//, '')}?hash=${hash}` : remainderOfAsset.path.replace(/^app\//, '')}`,
+    url: asset.url || `/${remainderOfAsset.cacheable ? `${remainderOfAsset.path.replace(/^app\//, '')}?hash=${hash}` : remainderOfAsset.path.replace(/^app\//, '')}`,
   };
 }
 

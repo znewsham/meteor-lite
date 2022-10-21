@@ -455,7 +455,7 @@ function rewriteExports(ast) {
 async function maybeCleanAST(file, isCommon, exportedMap) {
   if (!file.endsWith('.js')) {
     const resolvedFile = await resolveFile(file);
-    if (!resolvedFile.endsWith('.js')) {
+    if (!resolvedFile.endsWith('.js')) { // TODO: ts
       return;
     }
   }
@@ -556,13 +556,14 @@ async function maybeCleanAST(file, isCommon, exportedMap) {
     });
   }
   let exported;
+  let importAstBodyIndex = 0;
   if (usesExports && !hasRequires && !usesUncleanExports) {
     exported = rewriteExports(ast);
     exportedMap.set(file, exported);
   }
   if (requiresCleaning || importEntries.size || exported?.length) {
     importEntries.forEach(({ node }) => {
-      ast.body.splice(0, 0, node);
+      ast.body.splice(importAstBodyIndex++, 0, node);
     });
     if (hasRequires && hasImports) {
       throw new Error(`Imports and requires in ${file} (un-fixable)`);
@@ -645,9 +646,10 @@ export async function getImportTreeForPackageAndClean(
 }
 
 async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
-  const ast = acorn.parse((await fsPromises.readFile(file)).toString(), acornOptions);
+  const fileContents = (await fsPromises.readFile(file)).toString();
+  const ast = acorn.parse(fileContents, acornOptions);
   const hasRewrittenImportsOrExports = maybeRewriteImportsOrExports(ast);
-  const hasRewrittenRequires = maybeRewriteRequire(ast);
+  const hasRewrittenRequires = false && maybeRewriteRequire(ast, debug);
   const hasGlobalThis = maybeRewriteGlobalThis(ast);
   let hasRewrittenAwait = false;
   if (archsForFile.has('server')) {

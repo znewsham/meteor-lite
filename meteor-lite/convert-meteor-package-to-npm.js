@@ -3,35 +3,44 @@ import vm from 'vm';
 import fs from 'fs-extra';
 import fsPromises from 'fs/promises';
 
-import { meteorNameToNodeName, meteorNameToNodePackageDir, nodeNameToMeteorName, ParentArchs } from './helpers/helpers.js';
+import {
+  meteorNameToNodeName,
+  meteorNameToNodePackageDir,
+  nodeNameToMeteorName,
+} from './helpers/helpers.js';
 
+import { ParentArchs } from './constants.js';
 import { getPackageGlobals, replaceGlobalsInFile, globalStaticImports } from './helpers/globals.js';
 import packageJsContext from './helpers/package-js-context.js';
 import { getExportStr, getExportMainModuleStr } from './helpers/content.js';
 import MeteorArch from './meteor-arch.js';
 
 const CONVERT_TEST_PACKAGES = true;
+
 // TODO - we need a noop package, this isn't a good choice but it does work
 const NOOP_PACKAGE_NAME = '-';
 
 const supportedISOPackBuilds = new Map([
+  ['client', 'client'], // see comment about brower/legacy/client in loadFromISOPack
   ['web.browser', 'web.browser'],
   ['web.browser.legacy', 'web.browser.legacy'],
   ['os', 'server'],
 ]);
 
-const DEFAULT_ARCHS = ['client', 'server'];
+const DefaultArchs = ['client', 'server'];
 
-const DEFAULT_CLIENT_ARCHS = ['client'];
+const DefaultClientArchs = ['client'];
 
-const commonJS = new Set([
+const CommonJSPackageNames = new Set([
   'jquery',
   'underscore',
   'softwarerero:accounts-t9n',
   'ecmascript-runtime-client',
 ]);
 
-const excludes = new Set([
+// these packages will all be ignored, mostly they're build packages,
+// the only ones that aren't have a strong dependency on modules package
+const ExcludePackageNames = new Set([
   // 'ecmascript', - we need this because of how stupid meteor packages are, that they get access to the globals of every package dependency
   'typescript',
   'modules',
@@ -54,6 +63,7 @@ const SynonymArchs = new Map([
   ['modern', 'web.browser'],
 ]);
 
+// these are the ultimate leaf architectures we support - there is no such thing as a "client" build.
 const LeafArchs = [
   'web.browser.legacy',
   'web.browser',
@@ -63,8 +73,8 @@ const LeafArchs = [
 
 function sortImports(imports) {
   imports.sort((a, b) => {
-    const aIsAbsolute = a.match(/^[@\/]/);
-    const bIsAbsolute = b.match(/^[@\/]/);
+    const aIsAbsolute = a.match(/^[@/]/);
+    const bIsAbsolute = b.match(/^[@/]/);
     if (aIsAbsolute && bIsAbsolute) {
       return 0;
     }
@@ -184,16 +194,29 @@ class MeteorPackage {
     else {
       this.#filePrefix = '__test';
     }
+
+    if (this.#meteorName !== 'meteor') {
+      // all meteor packages have an implicit dependency on the meteor package
+      // see comment in tools/isobuild/package-api.js
+      this.addMeteorDependencies(['meteor']);
+    }
   }
 
   getArch(archName) {
-    if (SynonymArchs.has(archName)) {
-      archName = SynonymArchs.get(archName);
+    let actualArchName = archName;
+    if (SynonymArchs.has(actualArchName)) {
+      actualArchName = SynonymArchs.get(actualArchName);
     }
-    if (!this.#archs.has(archName)) {
-      this.#archs.set(archName, new MeteorArch(archName, ParentArchs.has(archName) ? this.getArch(ParentArchs.get(archName)) : undefined));
+    if (!this.#archs.has(actualArchName)) {
+      this.#archs.set(
+        actualArchName,
+        new MeteorArch(
+          actualArchName,
+          ParentArchs.has(actualArchName) ? this.getArch(ParentArchs.get(actualArchName)) : undefined,
+        ),
+      );
     }
-    return this.#archs.get(archName);
+    return this.#archs.get(actualArchName);
   }
 
   getAllArchs() {
@@ -211,7 +234,7 @@ class MeteorPackage {
   getArchs(archNames) {
     let allArchNames = archNames;
     if (!archNames?.length) {
-      allArchNames = DEFAULT_ARCHS;
+      allArchNames = DefaultArchs;
     }
 
     return allArchNames.map((archName) => this.getArch(archName));
@@ -238,12 +261,19 @@ class MeteorPackage {
 
   isCommon() {
     if (this.#isTest) {
-      return commonJS.has(this.#meteorName.replace('test:', ''));
+      return CommonJSPackageNames.has(this.#meteorName.replace('test:', ''));
     }
-    return commonJS.has(this.#meteorName);
+    return CommonJSPackageNames.has(this.#meteorName);
   }
 
-  setBasic({ name, description, version, prodOnly, testOnly, devOnly }) {
+  setBasic({
+    name,
+    description,
+    version,
+    prodOnly,
+    testOnly,
+    devOnly,
+  }) {
     this.#meteorName = name || this.#meteorName;
     this.#nodeName = MeteorPackage.meteorNameToNodeName(name || this.#meteorName);
     this.#description = description;
@@ -292,7 +322,7 @@ class MeteorPackage {
     let resolvedArchNames = archNames;
     // hack for old packages (iron:*) that add html files to the server by omitting the archs arg.
     if (!resolvedArchNames && (item.endsWith('.html') || item.endsWith('.css'))) {
-      resolvedArchNames = DEFAULT_CLIENT_ARCHS;
+      resolvedArchNames = DefaultClientArchs;
     }
     const actualArchs = this.getArchs(resolvedArchNames);
     actualArchs.forEach((arch) => {
@@ -326,7 +356,7 @@ class MeteorPackage {
     const actualArchs = this.getArchs(archNames);
     packages.forEach((dep) => {
       const [name] = dep.split('@');
-      if (excludes.has(name)) {
+      if (ExcludePackageNames.has(name)) {
         return;
       }
       const nodeName = MeteorPackage.meteorNameToNodeName(name);
@@ -343,12 +373,11 @@ class MeteorPackage {
       }
       // TODO should probably NEVER use version, since we can't do resolution the way we want (at least until all versions are published to npm)
       deps[nodeName] = meteorVersionPlaceholderSymbol;
-      if (!opts?.unordered && !opts?.testOnly) {
-        if (!opts?.weak) {
-          this.addImport(nodeName, archNames);
-          // TODO: do we actually need this.
-          this.#immediateDependencies.add(name);
-        }
+      if (!opts?.unordered && !opts?.testOnly && !opts?.weak) {
+        // TODO check comment in tools/isobuild/package-api.js
+        this.addImport(nodeName, archNames);
+        // TODO: do we actually need this.
+        this.#immediateDependencies.add(name);
       }
       // TODO: other opts?
     });
@@ -358,7 +387,7 @@ class MeteorPackage {
     const actualArchs = this.getArchs(archs);
     packages.forEach((dep) => {
       const [name] = dep.split('@');
-      if (excludes.has(name)) {
+      if (ExcludePackageNames.has(name)) {
         return;
       }
       this.#allPackages.add(name);
@@ -394,21 +423,6 @@ class MeteorPackage {
     return packageMap.get(meteorName);
   }
 
-  static rewriteDependencies(dependencies) {
-    return Object.fromEntries(Object.entries(dependencies).map(([name, version]) => {
-      if (version === meteorVersionPlaceholderSymbol) {
-        const importedPackage = packageMap.get(MeteorPackage.nodeNameToMeteorName(name));
-        if (!importedPackage) {
-          return undefined; // TODO?
-          throw new Error(`depending on missing package ${MeteorPackage.nodeNameToMeteorName(name)}`);
-        }
-        // didn't know you could call a private member of something other than this...
-        return [name, importedPackage.#version];
-      }
-      return [name, version];
-    }).filter(Boolean));
-  }
-
   getExportsForPackageJSON() {
     const ret = {
       ...(Object.fromEntries(this.getLeafArchs().map((arch) => [
@@ -428,6 +442,15 @@ class MeteorPackage {
       };
     }
     return ret;
+  }
+
+  archsToObject(fn) {
+    return {
+      ...(Object.fromEntries(this.getAllArchs().map((arch) => [
+        arch.archName,
+        Array.from(fn(arch)),
+      ]).filter(([, values]) => values.length))),
+    };
   }
 
   toJSON() {
@@ -457,12 +480,7 @@ class MeteorPackage {
           meteorNameToNodeName(packageName), this.getDependency(packageName).#version,
         ])),
         exportedVars,
-        implies: {
-          ...(Object.fromEntries(this.getAllArchs().map((arch) => [
-            arch.archName,
-            Array.from(arch.getImpliedPackages(true)),
-          ]).filter(([, values]) => values.length))),
-        },
+        implies: this.archsToObject((arch) => arch.getImpliedPackages(true)),
       },
       meteor: {
         ...(this.#isLazy && { lazy: true }),
@@ -628,6 +646,7 @@ class MeteorPackage {
   }
 
   async writeToNpmModule() {
+    // TODO: rework this entire function
     let state = 0;
     try {
       const shortCircuit = await this.writeDependencies();
@@ -659,18 +678,7 @@ class MeteorPackage {
         );
       }
       state = 2;
-      const { archsForFiles, exportedMap } = await this.getImportTreeForPackageAndClean(outputFolder);
-      /*if (this.#meteorName === 'browser-policy') { // TODO? Why did I make this specific to one package?!
-        exportedMap.forEach((exported, file) => {
-          const localFile = file.replace(outputFolder, '.');
-          if (localFile === this.#serverMainModule) {
-            this.#serverJsExports = Array.from(new Set([...this.#serverJsExports, ...exported.filter(Boolean)]));
-          }
-          if (localFile === this.#clientJsExports) {
-            this.#clientJsExports = Array.from(new Set([...this.#clientJsExports, ...exported.filter(Boolean)]));
-          }
-        });
-      }*/
+      const { archsForFiles } = await this.getImportTreeForPackageAndClean(outputFolder);
 
       const { all: globalsByFile, assigned: packageGlobalsByFile } = await getPackageGlobals(
         this.isCommon(),
@@ -833,7 +841,6 @@ class MeteorPackage {
     catch (error) {
       console.log(this.#meteorName, this.#outputParentFolder, state);
       console.error(error);
-      process.exit();
       throw error;
     }
     finally {
@@ -853,17 +860,23 @@ class MeteorPackage {
     json.uses.forEach(({ package: packageName, weak, unordered }) => {
       this.addMeteorDependencies([packageName], [clientOrServer], { weak, unordered });
     });
-    json.resources.forEach(({ path: aPath, file, type, servePath }) => {
-      if (!aPath && type !== 'source') {
+    json.resources.forEach(({
+      path: aPath,
+      file,
+      type,
+      servePath,
+    }) => {
+      let actualPath = aPath;
+      if (!actualPath && type !== 'source') {
         // iron_dynamic-template has a compiled version of dynamic_template.html I think
         // this needs to be imported as normal, but it doesn't have a "path"
-        aPath = servePath.split('/').slice(3).join('/');
-        this.addImport(`./${aPath}`, [clientOrServer]);
+        actualPath = servePath.split('/').slice(3).join('/');
+        this.addImport(`./${actualPath}`, [clientOrServer]);
       }
-      if (type === 'source' && aPath.startsWith('/packages/')) {
-        aPath = aPath.replace('/packages/', `/${clientOrServer}/`);
+      if (type === 'source' && actualPath.startsWith('/packages/')) {
+        actualPath = actualPath.replace('/packages/', `/${clientOrServer}/`);
       }
-      this.#isoResourcesToCopy.set(aPath, file);
+      this.#isoResourcesToCopy.set(actualPath, file);
     });
     if (json.node_modules) {
       const npmShrinkwrapJsonPath = path.join(this.#folderPath, json.node_modules, '.npm-shrinkwrap.json');
@@ -877,10 +890,11 @@ class MeteorPackage {
     json.resources
       .filter(({ type, fileOptions: { lazy } = {} }) => type === 'source' && lazy !== true)
       .forEach(({ path: aPath }) => {
-        if (aPath.startsWith('/packages/')) {
-          aPath = aPath.replace('/packages/', `/${clientOrServer}/`);
+        let actualPath = aPath;
+        if (actualPath.startsWith('/packages/')) {
+          actualPath = actualPath.replace('/packages/', `/${clientOrServer}/`);
         }
-        this.addImport(`./${aPath}`, [clientOrServer]);
+        this.addImport(`./${actualPath}`, [clientOrServer]);
       });
 
     json.resources
@@ -920,6 +934,15 @@ class MeteorPackage {
       testOnly: isopack.testOnly,
     });
     const builds = isopack.builds.filter((build) => supportedISOPackBuilds.has(build.arch));
+    // I'm not totally sure this is correct, but iron:router is an example of this
+    // it declares only a web.browser build but should be exporting it's symbols for web.browser and web.browser.legacy
+    // es5-shim is the opposite, it has totally different builds for web.browser and web.browser.legacy
+    if (!builds.find(({ arch }) => arch === 'web.browser.legacy')) {
+      const webBrowserBuild = builds.find(({ arch }) => arch === 'web.browser');
+      if (webBrowserBuild) {
+        webBrowserBuild.arch = 'client';
+      }
+    }
     await Promise.all(builds.map(async (build) => {
       const buildJson = JSON.parse((await fsPromises.readFile(path.join(fullFolder, build.path))).toString());
       return this.#loadISOBuild(buildJson, supportedISOPackBuilds.get(build.arch));
@@ -1109,16 +1132,33 @@ class MeteorPackage {
     return MeteorPackage.PackageNameToFolderPaths.get(this.#meteorName);
   }
 
+  static rewriteDependencies(dependencies) {
+    return Object.fromEntries(Object.entries(dependencies).map(([name, version]) => {
+      if (version === meteorVersionPlaceholderSymbol) {
+        const importedPackage = packageMap.get(MeteorPackage.nodeNameToMeteorName(name));
+        if (!importedPackage) {
+          return undefined; // TODO?
+          throw new Error(`depending on missing package ${MeteorPackage.nodeNameToMeteorName(name)}`);
+        }
+        // didn't know you could call a private member of something other than this...
+        return [name, importedPackage.#version];
+      }
+      return [name, version];
+    }).filter(Boolean));
+  }
+
   static foldersToSearch(...packagesPaths) {
-    // hack, until we move to using ISOPacks for core/non-core packages.
+    // sorta hack, until we move to using ISOPacks for core/non-core packages.
+    // the meteor repo has three folders for packages, rather than listing them all (which is the better option tbh)
+    // we try appending non-core and dependencies to all paths.
     return packagesPaths.flatMap((subPath) => [subPath, path.join(subPath, 'non-core'), path.join(subPath, 'deprecated')]);
   }
 
   static async alreadyConvertedPath(name, outputParentFolder) {
     const packagePath = meteorNameToNodePackageDir(name);
-    // TODO: find the actual path
-    if (await fs.pathExists(`${outputParentFolder}/${packagePath}/package.json`)) {
-      return `${outputParentFolder}/${packagePath}/package.json`;
+    const actualPath = path.join(outputParentFolder, packagePath, 'package.json');
+    if (await fs.pathExists(actualPath)) {
+      return actualPath;
     }
     return false;
   }
@@ -1154,7 +1194,7 @@ export async function convertPackage({
   options = {},
 }) {
   const absoluteOutputParentFolder = path.resolve(outputParentFolder);
-  if (excludes.has(meteorName)) {
+  if (ExcludePackageNames.has(meteorName)) {
     return;
   }
   if (packageMap.has(meteorName) && this.getDependency(meteorName).isFullyLoaded) {
