@@ -44,7 +44,7 @@ class AppProcess {
   }
 
   async spawn() {
-    const shellDir = path.resolve(path.join(baseBuildFolder, 'shell'));
+    const shellDir = process.env.METEOR_SHELL_DIR || path.resolve(path.join(baseBuildFolder, 'shell'));
     await fsExtra.ensureDir(shellDir);
     const ipc = await AppProcess.LoadInterProcessMessaging();
     this.process = spawn(
@@ -53,6 +53,7 @@ class AppProcess {
         '--inspect',
         '--no-wasm-code-gc', //TODO  hack
         '--experimental-specifier-resolution=node',
+        '--conditions=development',
         '.meteor/local/server/main.js',
         '.meteor/local/server/config.json',
       ],
@@ -61,6 +62,7 @@ class AppProcess {
         env: {
           METEOR_SHELL_DIR: shellDir,
           ...process.env,
+          NODE_ENV: 'development',
         },
       },
     );
@@ -79,6 +81,7 @@ class AppProcess {
   }
 
   static async LoadInterProcessMessaging() {
+    await import('@meteor/modern-browsers');
     return import('@meteor/inter-process-messaging');
   }
 }

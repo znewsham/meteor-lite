@@ -533,6 +533,8 @@ async function maybeCleanAST(file, isCommon, exportedMap) {
             };
             importEntries.set(importPath, importEntry);
           }
+          // TODO: if the parent is a body node, this isn't necessary
+          // e.g., require(x) can be entirely ommitted y = require(x) must be rewritten
           node.__rewritten = true;
           node.type = 'LogicalExpression';
           node.operator = '||';
@@ -649,7 +651,7 @@ async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
   const fileContents = (await fsPromises.readFile(file)).toString();
   const ast = acorn.parse(fileContents, acornOptions);
   const hasRewrittenImportsOrExports = maybeRewriteImportsOrExports(ast);
-  const hasRewrittenRequires = false && maybeRewriteRequire(ast, debug);
+  const hasRewrittenRequires = maybeRewriteRequire(ast);
   const hasGlobalThis = maybeRewriteGlobalThis(ast);
   let hasRewrittenAwait = false;
   if (archsForFile.has('server')) {

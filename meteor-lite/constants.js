@@ -5,3 +5,21 @@ export const ParentArchs = new Map([
   ['web.browser', 'web'],
   ['web', 'client'],
 ]);
+
+// these packages will all be ignored, mostly they're build packages,
+// the only ones that aren't have a strong dependency on modules package
+export const ExcludePackageNames = new Set([
+  // 'ecmascript', - we need this because of how stupid meteor packages are, that they get access to the globals of every package dependency
+  'typescript',
+  'modules',
+  'less',
+  'minifiers',
+  'isobuild:compiler-plugin',
+  'isobuild:dynamic-import',
+  'ecmascript-runtime-server', // just provides babel polyfills - we're going to require that server code be compliant?
+  'isobuild:minifier-plugin',
+  'standard-minifier-css',
+  'standard-minifier-js',
+  'dynamic-import', // this has a strong dependency on modules
+  'hot-module-replacement', // this has a strong dependency on modules
+]);

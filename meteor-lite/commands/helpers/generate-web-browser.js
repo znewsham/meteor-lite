@@ -115,6 +115,12 @@ function blazePlugin(cacheDirectory) {
   return {
     name: 'blaze',
     async setup(build) {
+      // HACK: required because templating-tools imports ecma-runtime-client (somewhere)
+      // and that's a CJS module that imports the ESM module modern-browsers
+      // and the CJS entry point for an ESM module just re-exports Package[name]
+      // we need to import the CJS module first.
+      // this isn't "required" in an app because the generation of dependencies.js handles this
+      await import('@meteor/modern-browsers');
       const { TemplatingTools } = await import('@meteor/templating-tools');
       build.onLoad(
         { filter: /\.html$/ },

@@ -9,7 +9,7 @@ import {
   nodeNameToMeteorName,
 } from './helpers/helpers.js';
 
-import { ParentArchs } from './constants.js';
+import { ParentArchs, ExcludePackageNames } from './constants.js';
 import { getPackageGlobals, replaceGlobalsInFile, globalStaticImports } from './helpers/globals.js';
 import packageJsContext from './helpers/package-js-context.js';
 import { getExportStr, getExportMainModuleStr } from './helpers/content.js';
@@ -36,24 +36,6 @@ const CommonJSPackageNames = new Set([
   'underscore',
   'softwarerero:accounts-t9n',
   'ecmascript-runtime-client',
-]);
-
-// these packages will all be ignored, mostly they're build packages,
-// the only ones that aren't have a strong dependency on modules package
-const ExcludePackageNames = new Set([
-  // 'ecmascript', - we need this because of how stupid meteor packages are, that they get access to the globals of every package dependency
-  'typescript',
-  'modules',
-  'less',
-  'minifiers',
-  'isobuild:compiler-plugin',
-  'isobuild:dynamic-import',
-  'ecmascript-runtime-server', // just provides babel polyfills - we're going to require that server code be compliant?
-  'isobuild:minifier-plugin',
-  'standard-minifier-css',
-  'standard-minifier-js',
-  'dynamic-import', // this has a strong dependency on modules
-  'hot-module-replacement', // this has a strong dependency on modules
 ]);
 
 export const packageMap = new Map();
@@ -125,7 +107,9 @@ class MeteorPackage {
 
   #startedWritingTest = false;
 
-  #weakPackages = new Set();
+  #weakDependencies = new Set();
+
+  #meteorDependencies = {};
 
   #dependencies = {};
 
@@ -135,7 +119,7 @@ class MeteorPackage {
 
   #archs = new Map();
 
-  #allPackages = new Set();
+  #strongDependencies = new Set();
 
   // non weak, non unordered
   #immediateDependencies = new Set();
@@ -345,9 +329,8 @@ class MeteorPackage {
       this.#testPackage.addMeteorDependencies(packages, archNames);
       return;
     }
-    let deps = this.#dependencies;
+    let deps = this.#meteorDependencies;
     if (opts?.unordered) {
-      // TODO: I think this is a problem with the local file install.
       deps = this.#peerDependencies;
     }
     else if (opts?.weak) {
@@ -363,10 +346,10 @@ class MeteorPackage {
 
       if (opts?.weak) {
         actualArchs.forEach((arch) => arch.addPreloadPackage(nodeName));
-        this.#weakPackages.add(name);
+        this.#weakDependencies.add(name);
       }
       else {
-        this.#allPackages.add(name);
+        this.#strongDependencies.add(name);
       }
       if (opts?.unordered) {
         actualArchs.forEach((arch) => arch.addUnorderedPackage(nodeName));
@@ -390,11 +373,11 @@ class MeteorPackage {
       if (ExcludePackageNames.has(name)) {
         return;
       }
-      this.#allPackages.add(name);
+      this.#strongDependencies.add(name);
       const nodeName = MeteorPackage.meteorNameToNodeName(name);
 
       // we should probably NEVER use version, since we can't do resolution the way we want (at least until all versions are published to npm)
-      this.#dependencies[nodeName] = meteorVersionPlaceholderSymbol;
+      this.#meteorDependencies[nodeName] = meteorVersionPlaceholderSymbol;
       this.#immediateDependencies.add(name);
       actualArchs.forEach((arch) => {
         // TODO: should this be the node name? An implication is a purely meteor concept, used exclusively in the conversion
@@ -464,8 +447,15 @@ class MeteorPackage {
       description: this.#description,
       type: this.isCommon() ? 'commonjs' : 'module',
       dependencies: MeteorPackage.rewriteDependencies(this.#dependencies),
-      devDependencies: CONVERT_TEST_PACKAGES ? MeteorPackage.rewriteDependencies(this.#testPackage.#dependencies) : {},
-      peerDependencies: MeteorPackage.rewriteDependencies(this.#peerDependencies),
+
+      devDependencies: CONVERT_TEST_PACKAGES ? MeteorPackage.rewriteDependencies({
+        ...this.#testPackage.#dependencies,
+        ...this.#testPackage.#meteorDependencies,
+      }) : {},
+      peerDependencies: MeteorPackage.rewriteDependencies({
+        ...this.#peerDependencies,
+        ...this.#meteorDependencies,
+      }),
       optionalDependencies: MeteorPackage.rewriteDependencies(this.#optionalDependencies),
       exports: {
         ...(this.#hasTests ? {
@@ -475,39 +465,32 @@ class MeteorPackage {
         './*': './*',
       },
       imports: this.#imports,
-      meteorTmp: {
-        dependencies: Object.fromEntries(Array.from(this.#allPackages).map((packageName) => [
-          meteorNameToNodeName(packageName), this.getDependency(packageName).#version,
-        ])),
-        exportedVars,
-        implies: this.archsToObject((arch) => arch.getImpliedPackages(true)),
-      },
       meteor: {
-        ...(this.#isLazy && { lazy: true }),
-        // the combination of all weak dependencies of this package
-        // AND all the ESM dependencies of this package if it is CJS
-        // this is required since right now require(esm) just exports
-        // the pre-defined package.
-        preload: {
-          ...(Object.fromEntries([
-            ...(this.getAllArchs().map((arch) => [
-              arch.archName,
-              Array.from(arch.getPreloadPackages(true)),
-            ]).filter(([, values]) => values.length)),
-          ])),
-        },
-        unordered: {
-          ...(Object.fromEntries(this.getAllArchs().map((arch) => [
-            arch.archName,
-            Array.from(arch.getUnorderedPackages(true)),
-          ]).filter(([, values]) => values.length))),
-        },
         assets: {
           ...(Object.fromEntries(this.getAllArchs().map((arch) => [
             arch.archName,
             arch.getAssets(true),
           ]).filter(([, values]) => values.length))),
         },
+      },
+      meteorTmp: {
+        ...(this.#isLazy && { lazy: true }),
+        // the combination of all weak dependencies of this package
+        // AND all the ESM dependencies of this package if it is CJS
+        // this is required since right now require(esm) just exports
+        // the pre-defined package.
+        preload: this.archsToObject((arch) => arch.getPreloadPackages(true)),
+        // TODO: do the weakDependencies need to be present, even if we haven't converted them?
+        // Probably yes, will have to handle this after we handle version control
+        weakDependencies: Object.fromEntries(Array.from(this.#weakDependencies).map((packageName) => (this.getDependency(packageName) ? [
+          meteorNameToNodeName(packageName), this.getDependency(packageName).#version,
+        ] : undefined)).filter(Boolean)),
+        unordered: this.archsToObject((arch) => arch.getUnorderedPackages(true)),
+        dependencies: Object.fromEntries(Array.from(this.#strongDependencies).map((packageName) => [
+          meteorNameToNodeName(packageName), this.getDependency(packageName).#version,
+        ])),
+        exportedVars,
+        implies: this.archsToObject((arch) => arch.getImpliedPackages(true)),
       },
     };
   }
@@ -525,14 +508,10 @@ class MeteorPackage {
         });
       }
     });
-    Object.keys(this.#dependencies)
+    Object.keys(this.#meteorDependencies)
       .forEach((dep) => {
         const packageName = MeteorPackage.nodeNameToMeteorName(dep);
         const meteorPackage = this.getDependency(packageName);
-        if (!meteorPackage) {
-          // it wasn't a meteor dep.
-          return;
-        }
         const depGlobals = meteorPackage.getImportedGlobalsMaps(globals);
         Object.entries(depGlobals).forEach(([archName, archGlobals]) => {
           if (!ret[archName]) {
@@ -865,16 +844,25 @@ class MeteorPackage {
       file,
       type,
       servePath,
+      fileOptions: {
+        lazy,
+        mainModule,
+      } = {},
     }) => {
       let actualPath = aPath;
       if (!actualPath && type !== 'source') {
         // iron_dynamic-template has a compiled version of dynamic_template.html I think
         // this needs to be imported as normal, but it doesn't have a "path"
         actualPath = servePath.split('/').slice(3).join('/');
-        this.addImport(`./${actualPath}`, [clientOrServer]);
       }
       if (type === 'source' && actualPath.startsWith('/packages/')) {
         actualPath = actualPath.replace('/packages/', `/${clientOrServer}/`);
+      }
+      if (mainModule) {
+        this.setMainModule(`./${actualPath}`, [clientOrServer], { lazy });
+      }
+      else if (!lazy) {
+        this.addImport(`./${actualPath}`, [clientOrServer]);
       }
       this.#isoResourcesToCopy.set(actualPath, file);
     });
@@ -950,7 +938,7 @@ class MeteorPackage {
 
     // first make sure all impled or used packages are loaded
     this.#waitingWrite = (await Promise.all(
-      Array.from(this.#allPackages).map((packageName) => MeteorPackage.ensurePackage(
+      Array.from(this.#strongDependencies).map((packageName) => MeteorPackage.ensurePackage(
         packageName,
         this.#outputParentFolder,
         this.#options,
@@ -963,7 +951,7 @@ class MeteorPackage {
   async ensurePackages(meteorInstall, ...otherPaths) {
     // first make sure all impled or used packages are loaded
     this.#waitingWrite = (await Promise.all([
-      ...Array.from(this.#allPackages).map(async (packageName) => {
+      ...Array.from(this.#strongDependencies).map(async (packageName) => {
         try {
           return await MeteorPackage.ensurePackage(
             packageName,
@@ -978,7 +966,7 @@ class MeteorPackage {
           throw e;
         }
       }),
-      ...Array.from(this.#weakPackages).map(async (packageName) => {
+      ...Array.from(this.#weakDependencies).map(async (packageName) => {
         try {
           return await MeteorPackage.ensurePackage(
             packageName,
@@ -998,7 +986,7 @@ class MeteorPackage {
 
     // now we've loaded all our dependencies, time to make sure all our ESM modules (if we're CJS) are listed as preload
     if (this.isCommon()) {
-      this.#allPackages.forEach((packageName) => {
+      this.#strongDependencies.forEach((packageName) => {
         const requiredPackage = this.getDependency(packageName);
         if (!requiredPackage.isCommon()) {
           const nodeName = meteorNameToNodeName(packageName);
@@ -1037,7 +1025,7 @@ class MeteorPackage {
       }
       Object.entries(packageJSON.meteorTmp.dependencies).forEach(([nodeName, version]) => {
         const meteorName = nodeNameToMeteorName(nodeName);
-        this.#allPackages.add(meteorName);
+        this.#strongDependencies.add(meteorName);
       });
       this.#loadedResolve();
       this.#alreadyWritten = true;
@@ -1046,7 +1034,6 @@ class MeteorPackage {
       return true;
     }
     catch (e) {
-      console.error(e);
       return false;
     }
   }
@@ -1070,12 +1057,12 @@ class MeteorPackage {
         }
       }
       catch (e) {
-        console.error(`problem parsing ${this.#meteorName}`);
+        e.message = `problem parsing ${this.#meteorName}: ${e.message}`;
         throw e;
       }
       packageMap.set(this.#meteorName, this);
       // next, find all the direct dependencies and see what they imply. Then add those to our dependencies
-      Object.keys(this.#dependencies)
+      Object.keys(this.#meteorDependencies)
         .forEach((dep) => {
           const importedPackage = this.getDependency(MeteorPackage.nodeNameToMeteorName(dep));
           if (!importedPackage) {
@@ -1089,8 +1076,7 @@ class MeteorPackage {
         });
     }
     catch (error) {
-      console.log(this.#meteorName || this.#folderName);
-      console.error(error);
+      error.message = `${this.#meteorName || this.#folderName}: ${error.message}`;
       throw error;
     }
     finally {

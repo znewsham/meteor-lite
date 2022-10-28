@@ -1,6 +1,8 @@
+#!/usr/bin/env -S node --experimental-specifier-resolution=node
 import { program } from 'commander';
 import os from 'os';
 import path from 'path';
+import fs from 'fs';
 import generateWebBrowser from './commands/generate-web-browser.js';
 import generateServer from './commands/generate-server.js';
 import convertPackagesForApp from './commands/convert-packages-for-app.js';
@@ -10,6 +12,7 @@ import run from './commands/dev-run.js';
 import generateMain from './commands/build-main.js';
 import prodBuild from './commands/prod-build.js';
 import connect from './commands/shell-client.js';
+import writePeerDependencies from './commands/write-peer-dependencies.js';
 import { baseBuildFolder } from './commands/helpers/command-helpers.js';
 
 const DefaultArchs = [
@@ -17,8 +20,11 @@ const DefaultArchs = [
   'web.browser.legacy',
 ];
 
+const packageJsonPath = path.join(path.dirname(import.meta.url.replace('file://', '')), 'package.json');
+const packageJSON = JSON.parse(fs.readFileSync(packageJsonPath).toString());
+
 program
-  .version('0.1.0')
+  .version(packageJSON.version)
   .command('generate-web-browser')
   .action(async () => {
     await Promise.all(DefaultArchs.map((archName) => generateWebBrowser(archName)));
@@ -81,7 +87,7 @@ program
   .command('convert-packages')
   .requiredOption('-p, --packages <package...>', 'the packages to convert')
   .requiredOption('-o, --outputDirectory <outputDirectory>', 'the output directory')
-  .requiredOption('-m, --meteor <meteorInstall>', 'path to the meteor install')
+  .option('-m, --meteor <meteorInstall>', 'path to the meteor install')
   .option('-d, --directories <directories...>', 'the prioritized list of directories to search for packages')
   .option('-f, --force-refresh', 'update all package dependencies, even if they\'re already converted')
   .action(async ({
@@ -117,7 +123,7 @@ program
 program
   .command('shell')
   .action(() => {
-    const shellDir = path.resolve(path.join(baseBuildFolder, 'shell'));
+    const shellDir = process.env.METEOR_SHELL_DIR || path.resolve(path.join(baseBuildFolder, 'shell'));
     connect(shellDir);
   });
 
@@ -131,6 +137,13 @@ program
       directory,
       archs: DefaultArchs,
     });
+  });
+
+program
+  .command('write-peer-dependencies')
+  // .option('-n, --name <name>', 'the name of the local module to use', 'meteor-peer-dependencies')
+  .action(async () => {
+    await writePeerDependencies({ name: 'meteor-peer-dependencies' });
   });
 
 program.parseAsync().catch(console.error);
