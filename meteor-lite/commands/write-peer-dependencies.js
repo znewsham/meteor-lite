@@ -42,6 +42,11 @@ export default async function writePeerDependencies({ name }) {
       delete finalVersions[nodeName];
     }
   });
+  const ret = {
+    name,
+    version: '1.0.0',
+    dependencies: {},
+  };
   if (badVersions.length) {
     console.log(badVersions);
     throw new Error('bad versions');
@@ -52,12 +57,16 @@ export default async function writePeerDependencies({ name }) {
         packageJson.dependencies[depName] = version;
         delete finalVersions[depName];
       }
+      else {
+        ret.dependencies[depName] = version;
+      }
     }
     else {
       delete finalVersions[depName];
     }
   });
 
+  ret.dependencies = Object.fromEntries(Object.entries(ret.dependencies).sort(([aName], [bName]) => aName.localeCompare(bName)));
   packageJson.dependencies = Object.fromEntries(Object.entries(packageJson.dependencies).sort(([aName], [bName]) => aName.localeCompare(bName)));
   await fs.ensureDir(name);
   await fs.writeFile(`./${name}/package.json`, JSON.stringify(ret, null, 2));

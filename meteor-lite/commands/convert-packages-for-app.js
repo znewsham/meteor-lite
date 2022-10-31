@@ -1,4 +1,4 @@
-import fs from 'fs/promises';
+import fs from 'fs-extra';
 import path from 'path';
 
 import { baseFolder, generateGlobals } from './helpers/command-helpers.js';
@@ -75,13 +75,18 @@ export default async function convertPackagesToNodeModulesForApp({
     otherPackageFolders,
     options: {
       forceRefresh,
+      skipNonLocalIfPossible: true,
+      localPackageFolders: otherPackageFolders.slice(0, 2), // TODO: this assumes ./packages and ./.common are first - we should instead make this an option
     },
   })));
   const actualPackages = appPackages.filter((name) => packageMap.has(name));
-  const packageJsonEntries = Object.fromEntries(actualPackages.map((meteorName) => [
-    meteorNameToNodeName(meteorName),
-    `file:${path.join(outputParentFolder, meteorNameToNodePackageDir(meteorName))}`,
-  ]));
+  const packageJsonEntries = Object.fromEntries(await Promise.all(actualPackages.map(async (meteorName) => {
+    const folderPath = path.join(outputParentFolder, meteorNameToNodePackageDir(meteorName));
+    return [
+      meteorNameToNodeName(meteorName),
+      await fs.pathExists(folderPath) ? `file:${folderPath}` : packageMap.get(meteorName).version,
+    ];
+  })));
 
   const packageJson = JSON.parse((await fs.readFile('./package.json')).toString());
   packageJson.dependencies = Object.fromEntries(Object.entries({
@@ -89,6 +94,7 @@ export default async function convertPackagesToNodeModulesForApp({
     ...packageJsonEntries,
   }).sort(([a], [b]) => a.localeCompare(b)));
   await fs.writeFile('./package.json', JSON.stringify(packageJson, null, 2));
+  // TODO: await write-peer-dependencies
   // TODO: await npmInstall(actualPackages);
 
   const serverPackages = await getFinalPackageListForArch(actualPackages, 'server');

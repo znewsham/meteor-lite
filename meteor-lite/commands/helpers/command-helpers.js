@@ -2,17 +2,33 @@ import fs from 'fs/promises';
 import crypto from 'crypto';
 import fsExtra from 'fs-extra';
 import path from 'path';
-import { meteorNameToNodePackageDir, nodeNameToMeteorName } from '../../helpers/helpers.js';
+import { meteorNameToNodeName, meteorNameToNodePackageDir, nodeNameToMeteorName } from '../../helpers/helpers.js';
+import { readPackageJsonForPackage } from '../../helpers/read-package-json.js';
+import { getNpmRc } from '../../helpers/ensure-npm-rc.js';
 
 export const baseFolder = './.meteor';
 export const baseBuildFolder = `${baseFolder}/local`;
 
+let _npmRc;
+
+async function ensureNpmRc() {
+  if (!_npmRc) {
+    _npmRc = await getNpmRc();
+  }
+  return _npmRc;
+}
+
 async function getPackageExports(outputDirectory, meteorPackageName, clientOrServer, map, conditionalMap) {
+  const npmRc = await ensureNpmRc();
   try {
     if (!map.has(meteorPackageName)) {
       map.set(meteorPackageName, new Set());
     }
-    const packageJson = JSON.parse((await fs.readFile(path.join(path.resolve(outputDirectory), meteorNameToNodePackageDir(meteorPackageName), 'package.json'))).toString());
+    const packageJson = await readPackageJsonForPackage(
+      meteorNameToNodeName(meteorPackageName),
+      path.join(path.resolve(outputDirectory), meteorNameToNodePackageDir(meteorPackageName)),
+      npmRc,
+    );
     if (packageJson.meteorTmp?.implies?.[clientOrServer]?.length) {
       await Promise.all(packageJson.meteorTmp.implies[clientOrServer].map((packageName) => getPackageExports(outputDirectory, nodeNameToMeteorName(packageName), clientOrServer, map, conditionalMap)));
     }

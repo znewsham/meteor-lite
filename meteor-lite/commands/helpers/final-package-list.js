@@ -15,10 +15,10 @@ async function populateDependencies(nodeName, dependenciesMap, archName, chainIs
   const isProdOnly = !!depPackageJSON.exports?.['.']?.production;
   const isProdOnlyImplied = chainIsProdOnly;
   dependenciesMap.set(nodeName, {
-    strong: Object.keys(depPackageJSON.meteor.dependencies),
-    preload: depPackageJSON.meteor.preload?.[archName] || [],
-    unordered: depPackageJSON.meteor.unordered?.[archName] || [],
-    isLazy: depPackageJSON.meteor.lazy,
+    strong: Object.keys(depPackageJSON.meteorTmp.dependencies || {}),
+    preload: depPackageJSON.meteorTmp.preload?.[archName] || [],
+    unordered: depPackageJSON.meteorTmp.unordered?.[archName] || [],
+    isLazy: depPackageJSON.meteorTmp.lazy,
 
     // we only care about storing 'implied' prod-only, this is because the prod only entry point of a package already handles this
     // butwe may need to hoist the packages dependencies (and still create globals)
@@ -27,15 +27,21 @@ async function populateDependencies(nodeName, dependenciesMap, archName, chainIs
 
   const allDeps = Array.from(new Set([
     ...Object.keys(depPackageJSON.meteorTmp.dependencies),
-    ...depPackageJSON.meteor.unordered?.[archName] || [],
+    ...depPackageJSON.meteorTmp.unordered?.[archName] || [],
   ]));
 
   await Promise.all(allDeps.map(async (depNodeName) => {
+    if (depNodeName === '@meteor/launch-screen') {
+      console.log('HERE', nodeName);
+    }
     await populateDependencies(depNodeName, dependenciesMap, archName, chainIsProdOnly || isProdOnly);
   }));
 }
 
 function populateReturnList(nodeName, ret, loaded, written, chain = []) {
+  if (nodeName === '@meteor/launch-screen') {
+    console.log(chain);
+  }
   if (written.has(nodeName)) {
     return;
   }

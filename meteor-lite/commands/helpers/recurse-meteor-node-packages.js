@@ -1,27 +1,8 @@
 import fs from 'fs-extra';
-import os from 'os';
 import path from 'path';
 import pacote from 'pacote';
 import { meteorNameToNodePackageDir, nodeNameToMeteorName } from '../../helpers/helpers';
-
-async function getNpmRc() {
-  const npmRcKeyValuePairs = new Map();
-  const lines = [];
-  if (await fs.pathExists(path.join(os.homedir(), '.npmrc'))) {
-    lines.push(...(await fs.readFile(path.join(os.homedir(), '.npmrc'))).toString().split('\n'));
-  }
-  if (await fs.pathExists('.npmrc')) {
-    lines.push(...(await fs.readFile('.npmrc')).toString().split('\n'));
-  }
-  lines.forEach((kv) => {
-    const [key, value] = kv.trim().split(/\s*=\s*/);
-    if (!key || key.startsWith('#')) {
-      return;
-    }
-    npmRcKeyValuePairs.set(key, value);
-  });
-  return npmRcKeyValuePairs;
-}
+import { getNpmRc, registryForPackage } from '../../helpers/ensure-npm-rc';
 
 // TODO: pass in as option
 export default async function recurseMeteorNodePackages(startingList, recursionFunction, initialState = {}, localDir = './npm-packages') {
@@ -36,12 +17,9 @@ export default async function recurseMeteorNodePackages(startingList, recursionF
         fullMetadata: true,
         where: process.cwd(),
       };
-      if (nodeName.startsWith('@')) {
-        const scope = nodeName.split('/')[0];
-        const registry = npmRc.get(`${scope}:registry`);
-        if (registry) {
-          options.registry = registry;
-        }
+      const registry = await registryForPackage(nodeName, npmRc);
+      if (registry) {
+        options.registry = registry;
       }
       const packageSpec = version ? `${nodeName}@${version}` : nodeName;
       const has = packageJsonMap.has(packageSpec);
@@ -66,7 +44,11 @@ export default async function recurseMeteorNodePackages(startingList, recursionF
             json = await pacote.manifest(packageSpec, options);
           }
           catch (e) {
-            console.warn(`Couldn't load ${newState?.isWEak ? 'weak ' : ''}package: ${packageSpec} because ${e.message}`);
+            console.warn(`Couldn't load ${newState?.isWeak ? 'weak ' : ''}package: ${packageSpec} because ${e.message}`);
+            if (!newState?.isWeak) {
+              console.log(loadedChain)
+              throw e;
+            }
           }
         }
         packageJsonMap.set(`${nodeName}@${version}`, json);

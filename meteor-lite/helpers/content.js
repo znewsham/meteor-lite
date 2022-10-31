@@ -32,7 +32,7 @@ export async function getExportMainModuleStr(meteorName, mainModule, outputFolde
     `import * as __package__ from "${mainModule}";`,
     `Package._define("${meteorName}", { ...__package__ });`,
     `export * from "${mainModule}";`,
-    
+
     // seriously debatable behaviour - but it will resolve all lib files that import X from "y" where y only provides a server default export
     ...(hasDefault ? [`export { default } from "${mainModule}";`] : ['export default undefined']),
   ].join('\n');
@@ -49,7 +49,8 @@ export function getExportStr(meteorName, clientOrServer, jsExports, jsImports, i
   deps.forEach((dep) => {
     const meteorPackage = packageGetter(dep);
     if (!meteorPackage) {
-      throw new Error(`Missing dependency ${dep}`);
+      // this should only happen for weak imports, and we're not gonna try and fix
+      return;
     }
     meteorPackage.getExportedVars(clientOrServer)
       .forEach((imp) => {

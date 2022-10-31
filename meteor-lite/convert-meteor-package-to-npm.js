@@ -2,12 +2,16 @@ import path from 'path';
 import vm from 'vm';
 import fs from 'fs-extra';
 import fsPromises from 'fs/promises';
+import pacote from 'pacote';
+import semver from 'semver';
 
 import {
   meteorNameToNodeName,
   meteorNameToNodePackageDir,
   nodeNameToMeteorName,
 } from './helpers/helpers.js';
+
+import { getNpmRc, registryForPackage } from './helpers/ensure-npm-rc';
 
 import { ParentArchs, ExcludePackageNames } from './constants.js';
 import { getPackageGlobals, replaceGlobalsInFile, globalStaticImports } from './helpers/globals.js';
@@ -91,6 +95,8 @@ function getImportStr(importsSet, isCommon) {
 const meteorVersionPlaceholderSymbol = Symbol('meteor-version-placeholder');
 
 class MeteorPackage {
+  static #npmrc;
+
   #folderName;
 
   #meteorName;
@@ -248,6 +254,10 @@ class MeteorPackage {
       return CommonJSPackageNames.has(this.#meteorName.replace('test:', ''));
     }
     return CommonJSPackageNames.has(this.#meteorName);
+  }
+
+  get version() {
+    return this.#version;
   }
 
   setBasic({
@@ -443,7 +453,7 @@ class MeteorPackage {
     ]).filter(([, values]) => values.length)));
     return {
       name: this.#nodeName,
-      version: this.#version,
+      version: this.#version && semver.coerce(this.#version).version,
       description: this.#description,
       type: this.isCommon() ? 'commonjs' : 'module',
       dependencies: MeteorPackage.rewriteDependencies(this.#dependencies),
@@ -512,6 +522,10 @@ class MeteorPackage {
       .forEach((dep) => {
         const packageName = MeteorPackage.nodeNameToMeteorName(dep);
         const meteorPackage = this.getDependency(packageName);
+        if (!meteorPackage) {
+          console.warn(`couldn't recurse into ${packageName} from ${this.#meteorName}`);
+          return;
+        }
         const depGlobals = meteorPackage.getImportedGlobalsMaps(globals);
         Object.entries(depGlobals).forEach(([archName, archGlobals]) => {
           if (!ret[archName]) {
@@ -565,7 +579,17 @@ class MeteorPackage {
       return true;
     }
     this.#alreadyWritten = true;
-    await Promise.all(Array.from(this.#immediateDependencies).map((p) => this.getDependency(p).writeToNpmModule()));
+    await Promise.all(Array.from(this.#immediateDependencies).map(async (p) => {
+      const dep = this.getDependency(p);
+      if (!dep && !this.#weakDependencies.has(p)) {
+        console.log(this.#weakDependencies);
+        throw new Error(`Strong dependency ${p} missing for package ${this.#meteorName}`);
+      }
+      if (!dep) {
+        return;
+      }
+      await dep.writeToNpmModule();
+    }));
     return false;
   }
 
@@ -634,7 +658,13 @@ class MeteorPackage {
       }
       if (CONVERT_TEST_PACKAGES && this.#hasTests && !this.#startedWritingTest) {
         this.#startedWritingTest = true;
-        await this.#testPackage.writeDependencies();
+        try {
+          await this.#testPackage.writeDependencies();
+        }
+        catch (e) {
+          e.message = `Test package problem: ${e.message}`;
+          console.warn(e);
+        }
       }
       state = 1;
       const outputFolder = path.resolve(`${this.#outputParentFolder}/${meteorNameToNodePackageDir(this.#meteorName)}`);
@@ -657,8 +687,19 @@ class MeteorPackage {
         );
       }
       state = 2;
-      const { archsForFiles } = await this.getImportTreeForPackageAndClean(outputFolder);
-
+      const { archsForFiles, exportedMap } = await this.getImportTreeForPackageAndClean(outputFolder);
+      this.getArchs().forEach((arch) => {
+        const mainModule = arch.getMainModule();
+        if (mainModule) {
+          const absoluteMainModule = path.join(outputFolder, mainModule);
+          if (exportedMap.has(absoluteMainModule)) {
+            this.addExports(
+              exportedMap.get(absoluteMainModule),
+              arch.name,
+            );
+          }
+        }
+      });
       const { all: globalsByFile, assigned: packageGlobalsByFile } = await getPackageGlobals(
         this.isCommon(),
         outputFolder,
@@ -1000,9 +1041,8 @@ class MeteorPackage {
     }
   }
 
-  async loadFromNodeJSON(pathToJson, meteorInstall, ...packagesPaths) {
+  async loadFromNodeJSON(packageJSON, meteorInstall, ...packagesPaths) {
     try {
-      const packageJSON = JSON.parse((await fsPromises.readFile(pathToJson)).toString());
       this.setBasic({
         name: nodeNameToMeteorName(packageJSON.name),
         version: packageJSON.version,
@@ -1053,7 +1093,13 @@ class MeteorPackage {
         script.runInNewContext(context);
         await this.ensurePackages(meteorInstall, ...otherPaths);
         if (CONVERT_TEST_PACKAGES && this.#hasTests) {
-          await this.#testPackage.ensurePackages(meteorInstall, ...otherPaths);
+          try {
+            await this.#testPackage.ensurePackages(meteorInstall, ...otherPaths);
+          }
+          catch (e) {
+            e.message = `Test package problem: ${e.message}`;
+            console.warn(e);
+          }
         }
       }
       catch (e) {
@@ -1077,6 +1123,7 @@ class MeteorPackage {
     }
     catch (error) {
       error.message = `${this.#meteorName || this.#folderName}: ${error.message}`;
+      packageMap.delete(this.#meteorName);
       throw error;
     }
     finally {
@@ -1085,12 +1132,34 @@ class MeteorPackage {
     }
   }
 
+  async convertFromExistingIfPossible(meteorInstall, ...packagesPaths) {
+    const alreadyConvertedJson = await MeteorPackage.alreadyConvertedJson(this.#meteorName, this.#outputParentFolder);
+    if (alreadyConvertedJson) {
+      const isGood = await this.loadFromNodeJSON(alreadyConvertedJson, meteorInstall, ...packagesPaths);
+      return isGood;
+    }
+    return false;
+  }
+
   async convert(meteorInstall, ...packagesPaths) {
+    if (this.#options.skipNonLocalIfPossible) {
+      const packageJsPath = await this.findPackageJs(...this.#options.localPackageFolders);
+      if (!packageJsPath) {
+        const isGood = await this.convertFromExistingIfPossible(meteorInstall, ...packagesPaths);
+        if (isGood) {
+          return;
+        }
+      }
+    }
     await this.loadFromMeteorPackage(meteorInstall, ...packagesPaths);
     await this.writeToNpmModule();
   }
 
   async findPackageJs(...packagesPaths) {
+    return MeteorPackage.findPackageJs(this.#meteorName, ...packagesPaths);
+  }
+
+  static async findPackageJs(name, ...packagesPaths) {
     const folders = MeteorPackage.foldersToSearch(...packagesPaths);
     const tempPrioMap = new Map();
     if (!MeteorPackage.PackageNameToFolderPaths.size) {
@@ -1115,7 +1184,7 @@ class MeteorPackage {
         }
       })));
     }
-    return MeteorPackage.PackageNameToFolderPaths.get(this.#meteorName);
+    return MeteorPackage.PackageNameToFolderPaths.get(name);
   }
 
   static rewriteDependencies(dependencies) {
@@ -1140,8 +1209,38 @@ class MeteorPackage {
     return packagesPaths.flatMap((subPath) => [subPath, path.join(subPath, 'non-core'), path.join(subPath, 'deprecated')]);
   }
 
-  static async alreadyConvertedPath(name, outputParentFolder) {
-    const packagePath = meteorNameToNodePackageDir(name);
+  static async ensureRegistryConfig() {
+    if (!this.#npmrc) {
+      this.#npmrc = await getNpmRc();
+    }
+  }
+
+  static async checkRegistryForConvertedPackage(meteorName) {
+    const nodeName = meteorNameToNodeName(meteorName);
+    await this.ensureRegistryConfig();
+    const registry = await registryForPackage(nodeName, this.#npmrc);
+    if (registry) {
+      // TODO: we should probably "always" do this in the future.
+      // For now it'll only happen if we've explicitly pushed, which will always be to a custom registry
+      try {
+        const packageSpec = nodeName; // TODO: version
+        const options = {
+          fullReadJson: true,
+          fullMetadata: true,
+          where: process.cwd(),
+          registry,
+        };
+        return await pacote.manifest(packageSpec, options);
+      }
+      catch (e) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  static async alreadyConvertedPath(meteorName, outputParentFolder) {
+    const packagePath = meteorNameToNodePackageDir(meteorName);
     const actualPath = path.join(outputParentFolder, packagePath, 'package.json');
     if (await fs.pathExists(actualPath)) {
       return actualPath;
@@ -1149,16 +1248,31 @@ class MeteorPackage {
     return false;
   }
 
+  static async alreadyConvertedJson(meteorName, outputParentFolder) {
+    const actualPath = await this.alreadyConvertedPath(meteorName, outputParentFolder);
+    if (actualPath) {
+      return JSON.parse((await fsPromises.readFile(actualPath)).toString());
+    }
+    return this.checkRegistryForConvertedPackage(meteorName);
+  }
+
   static async ensurePackage(name, outputParentFolder, options, meteorInstall, ...packagesPaths) {
     if (!packageMap.has(name)) {
       const meteorPackage = new MeteorPackage(name, false, outputParentFolder, options);
       packageMap.set(name, meteorPackage);
       if (!options.forceRefresh) {
-        const alreadyConvertedPath = await MeteorPackage.alreadyConvertedPath(name, outputParentFolder);
-        if (alreadyConvertedPath) {
-          const isGood = await meteorPackage.loadFromNodeJSON(alreadyConvertedPath, meteorInstall, ...packagesPaths);
-          if (isGood) {
-            return false;
+        let shouldSkip = true;
+        if (options.localPackageFolders) {
+          // if the package exists in a "local" dir, we're not gonna convert it
+          shouldSkip = !await this.findPackageJs(name, ...options.localPackageFolders);
+        }
+        if (shouldSkip) {
+          const alreadyConvertedJson = await this.alreadyConvertedJson(name, outputParentFolder);
+          if (alreadyConvertedJson) {
+            const isGood = await meteorPackage.loadFromNodeJSON(alreadyConvertedJson, meteorInstall, ...packagesPaths);
+            if (isGood) {
+              return false;
+            }
           }
         }
       }

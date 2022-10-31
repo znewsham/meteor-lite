@@ -1,5 +1,5 @@
 import semver from 'semver';
-import path, { relative } from 'path';
+import path from 'path';
 import recurseMeteorNodePackages from './recurse-meteor-node-packages.js';
 
 // TODO: do this properly

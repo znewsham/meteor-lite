@@ -11,6 +11,7 @@ export const ParentArchs = new Map([
 export const ExcludePackageNames = new Set([
   // 'ecmascript', - we need this because of how stupid meteor packages are, that they get access to the globals of every package dependency
   'typescript',
+  'coffeescript',
   'modules',
   'less',
   'minifiers',
