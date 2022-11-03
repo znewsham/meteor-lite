@@ -2,7 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 
 import { baseFolder, generateGlobals } from './helpers/command-helpers.js';
-import { convertPackage, packageMap } from '../convert-meteor-package-to-npm.js';
+import { convertPackage, packageMap, warmPackage } from '../convert-meteor-package-to-npm.js';
 import { meteorNameToNodeName, meteorNameToNodePackageDir, nodeNameToMeteorName } from '../helpers/helpers.js';
 import { getFinalPackageListForArch } from './helpers/final-package-list';
 
@@ -58,28 +58,47 @@ export default async function convertPackagesToNodeModulesForApp({
   meteorInstall,
   forceRefresh,
 }) {
+  // by using versions instead of packages we'll enforce converting the exact versions of every package
+  // but it also means we're gonna look at every package - not just "ours" + lazily their dependencies
   const appPackages = (await fs.readFile(`${baseFolder}/packages`))
     .toString()
     .split('\n')
-    .map((line) => line.split('@')[0].split('#')[0].trim())
+    .map((line) => line.split('#')[0].trim())
     .filter(Boolean);
+
+  // TODO: apply version constraints from `${baseFolder}/packages`
+  const appVersions = (await fs.readFile(`${baseFolder}/packages`))
+    .toString()
+    .split('\n')
+    .map((line) => line.split('#')[0].trim())
+    .filter(Boolean);
+
+  const options = {
+    forceRefresh,
+    skipNonLocalIfPossible: true,
+    // TODO: this assumes ./packages and ./.common are first - we should instead make this an option
+    localPackageFolders: otherPackageFolders.slice(0, 2),
+  };
+  await Promise.all(appVersions.map((meteorNameAndVersionConstraint) => warmPackage({
+    meteorName: meteorNameAndVersionConstraint,
+    outputParentFolder,
+    options,
+  })));
 
   const allPackages = Array.from(new Set([
     ...appPackages,
     ...extraPackages,
   ]));
-  await Promise.all(allPackages.map((meteorName) => convertPackage({
-    meteorName,
+  await Promise.all(allPackages.map((meteorNameAndMaybeVersionConstraint) => convertPackage({
+    meteorName: meteorNameAndMaybeVersionConstraint,
     meteorInstall,
     outputParentFolder,
     otherPackageFolders,
-    options: {
-      forceRefresh,
-      skipNonLocalIfPossible: true,
-      localPackageFolders: otherPackageFolders.slice(0, 2), // TODO: this assumes ./packages and ./.common are first - we should instead make this an option
-    },
+    options,
   })));
-  const actualPackages = appPackages.filter((name) => packageMap.has(name));
+  const actualPackages = appPackages
+    .map((nameAndMaybeVersion) => nameAndMaybeVersion.split('@')[0])
+    .filter((name) => packageMap.has(name));
   const packageJsonEntries = Object.fromEntries(await Promise.all(actualPackages.map(async (meteorName) => {
     const folderPath = path.join(outputParentFolder, meteorNameToNodePackageDir(meteorName));
     return [
@@ -95,8 +114,7 @@ export default async function convertPackagesToNodeModulesForApp({
   }).sort(([a], [b]) => a.localeCompare(b)));
   await fs.writeFile('./package.json', JSON.stringify(packageJson, null, 2));
   // TODO: await write-peer-dependencies
-  // TODO: await npmInstall(actualPackages);
-
+  // TODO: maybe await npmInstall(actualPackages);
   const serverPackages = await getFinalPackageListForArch(actualPackages, 'server');
   const clientPackages = await getFinalPackageListForArch(actualPackages, 'client');
 

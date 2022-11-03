@@ -206,19 +206,17 @@ function getExportNamedDeclarationNodes(ast) {
   return nodes;
 }
 
-function maybeRewriteAwait(ast, infoOnly, debug) {
+function maybeRewriteAwait(ast, multiArch, debug) {
   let ret = false;
   walk(ast, {
-    enter(node) {
-      // require('meteor/whatever')
+    leave(node) {
       if (
         node.type === 'AwaitExpression'
       ) {
         ret = true;
-        if (!infoOnly) {
-          node.__rewritten = true;
-          node.type = 'CallExpression';
-          node.callee = {
+        const promiseAwait = {
+          type: 'CallExpression',
+          callee: {
             type: 'MemberExpression',
             object: {
               type: 'Identifier',
@@ -228,8 +226,29 @@ function maybeRewriteAwait(ast, infoOnly, debug) {
               type: 'Identifier',
               name: 'await',
             },
-          };
-          node.arguments = [node.argument];
+          },
+          arguments: [node.argument],
+        };
+        if (multiArch) {
+          this.replace({
+            type: 'ConditionalExpression',
+            test: {
+              type: 'MemberExpression',
+              object: {
+                type: 'Identifier',
+                name: 'Meteor',
+              },
+              property: {
+                type: 'Identifier',
+                name: 'isServer',
+              },
+            },
+            consequent: promiseAwait,
+            alternate: node,
+          });
+        }
+        else {
+          this.replace(promiseAwait);
         }
       }
     },
@@ -656,9 +675,6 @@ async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
   let hasRewrittenAwait = false;
   if (archsForFile.has('server')) {
     hasRewrittenAwait = maybeRewriteAwait(ast, archsForFile.size !== 1);
-    if (hasRewrittenAwait && archsForFile.size !== 1) {
-      console.warn(`file ${file} used on both client and server required Promise.await conversion, this probably isn't gonna work (we left it alone)`);
-    }
   }
   const scopeManager = analyzeScope(ast, {
     ecmaVersion: 2022,

@@ -1,12 +1,15 @@
 import module from 'module';
+import { getCorePackageVersion } from './ensure-local-package';
 
 const aRequire = module.createRequire(import.meta.url);
 
-
-function callbackWrapper(meteorPackage, cb, isTest = false) {
+async function callbackWrapper(meteorPackage, meteorInstall, cb, isTest = false) {
+  const useCalls = [];
+  const implyCalls = [];
+  let meteorVersion;
   cb({
-    versionsFrom() {
-
+    versionsFrom(version) {
+      meteorVersion = version;
     },
     export(symbol, archOrArchs, maybeOpts) {
       if (isTest) {
@@ -51,12 +54,16 @@ function callbackWrapper(meteorPackage, cb, isTest = false) {
       if (isTest) {
         opts.testOnly = true;
       }
-      meteorPackage.addMeteorDependencies(packages, archs, opts);
+      useCalls.push({
+        packages,
+        archs,
+        opts,
+      });
     },
     imply(packageOrPackages, archOrArchs) {
       const packages = !Array.isArray(packageOrPackages) ? [packageOrPackages] : packageOrPackages;
       const archs = archOrArchs && !Array.isArray(archOrArchs) ? [archOrArchs] : archOrArchs;
-      meteorPackage.addImplies(packages, archs);
+      implyCalls.push({ packages, archs });
     },
     addFiles(fileOrFiles, archOrArchs) {
       const files = !Array.isArray(fileOrFiles) ? [fileOrFiles] : fileOrFiles;
@@ -70,11 +77,34 @@ function callbackWrapper(meteorPackage, cb, isTest = false) {
       meteorPackage.setMainModule(file, archs, { ...opts, testOnly: isTest });
     },
   });
+
+  if (meteorVersion) {
+    await Promise.all([...useCalls, ...implyCalls].map(async (useOrImplyCall) => {
+      useOrImplyCall.packages = await Promise.all(useOrImplyCall.packages.map(async (packageAndMaybeVersion) => {
+        if (packageAndMaybeVersion.includes('@')) {
+          return packageAndMaybeVersion;
+        }
+        const version = await getCorePackageVersion({ meteorVersion, meteorInstall, name: packageAndMaybeVersion });
+        if (!version) {
+          return packageAndMaybeVersion;
+        }
+        return `${packageAndMaybeVersion}@${version}`;
+      }));
+    }));
+  }
+  useCalls.forEach(({ packages, archs, opts }) => {
+    meteorPackage.addMeteorDependencies(packages, archs, opts);
+  });
+  implyCalls.forEach(({ packages, archs }) => {
+    meteorPackage.addImplies(packages, archs);
+  });
 }
-export default function packageJsContext(meteorPackage) {
-  return {
+export default function packageJsContext(meteorPackage, meteorInstall) {
+  const ret = {
     process: globalThis.process,
     global: globalThis,
+    onUsePromise: undefined,
+    onTestPromise: undefined,
     Cordova: {
       depends() {
         // noop
@@ -106,11 +136,13 @@ export default function packageJsContext(meteorPackage) {
         // noop
       },
       onTest(cb) {
-        callbackWrapper(meteorPackage, cb, true);
+        ret.onTestPromise = callbackWrapper(meteorPackage, meteorInstall, cb, true);
       },
       onUse(cb) {
-        callbackWrapper(meteorPackage, cb, false);
+        ret.onUsePromise = callbackWrapper(meteorPackage, meteorInstall, cb, false);
       },
     },
   };
+
+  return ret;
 }

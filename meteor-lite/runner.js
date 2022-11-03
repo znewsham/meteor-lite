@@ -14,6 +14,8 @@ import prodBuild from './commands/prod-build.js';
 import connect from './commands/shell-client.js';
 import writePeerDependencies from './commands/write-peer-dependencies.js';
 import { baseBuildFolder } from './commands/helpers/command-helpers.js';
+import ensureLocalPackage from './commands/ensure-local-package.js';
+import { error as logError } from './helpers/log';
 
 const DefaultArchs = [
   'web.browser',
@@ -146,4 +148,17 @@ program
     await writePeerDependencies({ name: 'meteor-peer-dependencies' });
   });
 
-program.parseAsync().catch(console.error);
+program
+  .command('ensure-local-package')
+  .requiredOption('-n, --name <name>', 'the name of the package')
+  .requiredOption('-v, --version <version>', 'the version of the package')
+  .option('-m, --meteor <meteorInstall>', 'path to the meteor install')
+  .action(async ({ name, version, meteor }) => {
+    console.log(await ensureLocalPackage({ name, version, meteorInstall: meteor }));
+  });
+
+program.parseAsync().catch((err) => {
+  logError('critical error, exiting');
+  logError(err, err.stack);
+  process.exit();
+});

@@ -9,10 +9,15 @@ export const ParentArchs = new Map([
 // these packages will all be ignored, mostly they're build packages,
 // the only ones that aren't have a strong dependency on modules package
 export const ExcludePackageNames = new Set([
+  // TODO: this causes trouble with shell-server
   // 'ecmascript', - we need this because of how stupid meteor packages are, that they get access to the globals of every package dependency
   'typescript',
   'coffeescript',
   'modules',
+  'modules-runtime',
+  'caching-compiler',
+  'caching-html-compiler',
+  'minifier-css',
   'less',
   'minifiers',
   'isobuild:compiler-plugin',
