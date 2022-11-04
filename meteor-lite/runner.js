@@ -56,8 +56,10 @@ program
 program
   .command('convert-deps')
   .option('-p, --packages [packages...]', 'any extra packages to convert')
-  .option('-d, --directories <directories...>', 'the prioritized list of directories to search for packages')
-  .option('-o, --outputDirectory <outputDirectory>', 'the output directory')
+  .option('-d, --directories <directories...>', 'the prioritized list of additional directories to search for packages')
+  .requiredOption('-o, --outputDirectory <outputDirectory>', 'the output directory')
+  .option('--outputLocalDirectory <outputLocalDirectory>', 'the output directory for packages in the packages directory')
+  .option('--outputSharedDirectory <outputSharedDirectory>', 'the output directory for packages in the METEOR_PACKAGE_DIRS directory')
   .option('-u, --update', 'update the dependencies.js file?')
   .option('-m, --meteor <meteorInstall>', 'path to the meteor install')
   .option('-f, --force-refresh', 'update all package dependencies, even if they\'re already converted')
@@ -65,6 +67,8 @@ program
     packages = [],
     directories,
     outputDirectory,
+    outputSharedDirectory,
+    outputLocalDirectory,
     update,
     meteor,
     forceRefresh,
@@ -78,6 +82,8 @@ program
     console.log(await convertPackagesForApp({
       extraPackages: packages,
       outputDirectory,
+      outputSharedDirectory,
+      outputLocalDirectory,
       directories,
       updateDependencies: update,
       meteorInstall: meteor || `${os.homedir()}/.meteor`,
@@ -88,19 +94,26 @@ program
 program
   .command('convert-packages')
   .requiredOption('-p, --packages <package...>', 'the packages to convert')
-  .requiredOption('-o, --outputDirectory <outputDirectory>', 'the output directory')
+  .requiredOption('-o, --outputDirectory <outputDirectory>', 'the output directory for general packages')
+  .option('--outputLocalDirectory <outputLocalDirectory>', 'the output directory for packages in the packages directory')
+  .option('--outputSharedDirectory <outputSharedDirectory>', 'the output directory for packages in the METEOR_PACKAGE_DIRS directory')
   .option('-m, --meteor <meteorInstall>', 'path to the meteor install')
-  .option('-d, --directories <directories...>', 'the prioritized list of directories to search for packages')
+  .option('-d, --directories <directories...>', 'the prioritized list of additional directories to search for packages')
   .option('-f, --force-refresh', 'update all package dependencies, even if they\'re already converted')
   .action(async ({
     packages: packageNames,
-    directories, outputDirectory,
+    directories,
+    outputDirectory,
+    outputSharedDirectory,
+    outputLocalDirectory,
     meteor,
     forceRefresh,
   }) => {
     console.log(await convertPackage({
       packageNames,
       outputDirectory,
+      outputSharedDirectory,
+      outputLocalDirectory,
       directories: directories || [],
       meteorInstall: meteor || `${os.homedir()}/.meteor`,
       forceRefresh,

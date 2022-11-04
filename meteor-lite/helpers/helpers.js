@@ -47,3 +47,7 @@ export function sortSemver(arr) {
     return semver.compare(semverA, semverB);
   });
 }
+
+export function meteorVersionToSemver(versions) {
+  return versions.split(/\s*\|\|\s*/).map((versionConstraint) => (versionConstraint.startsWith('0') ? '0.x' : `^${versionConstraint}`)).join(' || ');
+}

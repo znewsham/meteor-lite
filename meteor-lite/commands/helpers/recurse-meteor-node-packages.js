@@ -3,9 +3,15 @@ import path from 'path';
 import pacote from 'pacote';
 import { meteorNameToNodePackageDir, nodeNameToMeteorName } from '../../helpers/helpers';
 import { getNpmRc, registryForPackage } from '../../helpers/ensure-npm-rc';
+import { warn } from '../../helpers/log';
 
-// TODO: pass in as option
-export default async function recurseMeteorNodePackages(startingList, recursionFunction, initialState = {}, localDir = './npm-packages') {
+export default async function recurseMeteorNodePackages(
+  startingList,
+  recursionFunction,
+  initialState = {},
+  // TODO: pass this in
+  localDirs = ['./npm-packages-local', './npm-packages-shared', './npm-packages'],
+) {
   const packageJsonMap = new Map();
   let nextPackages = startingList.slice(0);
   const npmRc = await getNpmRc();
@@ -21,6 +27,10 @@ export default async function recurseMeteorNodePackages(startingList, recursionF
       if (registry) {
         options.registry = registry;
       }
+      if (nodeName.startsWith('@@')) {
+        console.log(new Error());
+        process.exit();
+      }
       const packageSpec = version ? `${nodeName}@${version}` : nodeName;
       const has = packageJsonMap.has(packageSpec);
       let json = packageJsonMap.get(packageSpec);
@@ -29,14 +39,21 @@ export default async function recurseMeteorNodePackages(startingList, recursionF
       // use has since we set to undefined below
       if (!has) {
         // TODO: pull from local directories
-        if (localDir) {
+        if (localDirs?.length) {
           const localFolderName = meteorNameToNodePackageDir(nodeNameToMeteorName(nodeName));
-          pathToLocal = path.join(localDir, localFolderName, 'package.json');
-          if (await fs.pathExists(pathToLocal)) {
-            json = JSON.parse((await fs.readFile(pathToLocal)).toString());
-          }
-          else {
-            pathToLocal = undefined;
+          const results = (await Promise.all(localDirs.map(async (localDir) => {
+            const pathToLocalInner = path.join(localDir, localFolderName, 'package.json');
+            if (await fs.pathExists(pathToLocalInner)) {
+              return {
+                pathToLocal: pathToLocalInner,
+                json: JSON.parse((await fs.readFile(pathToLocalInner)).toString()),
+              };
+            }
+            return undefined;
+          }))).filter(Boolean);
+          if (results.length) {
+            json = results[0].json;
+            pathToLocal = results[0].pathToLocal;
           }
         }
         if (!json) {
@@ -44,9 +61,8 @@ export default async function recurseMeteorNodePackages(startingList, recursionF
             json = await pacote.manifest(packageSpec, options);
           }
           catch (e) {
-            console.warn(`Couldn't load ${newState?.isWeak ? 'weak ' : ''}package: ${packageSpec} because ${e.message}`);
+            warn(`Couldn't load ${newState?.isWeak ? 'weak ' : ''}package: ${packageSpec} because ${e.message} loaded by ${loadedChain}`);
             if (!newState?.isWeak) {
-              console.log(loadedChain)
               throw e;
             }
           }

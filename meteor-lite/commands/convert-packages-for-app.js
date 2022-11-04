@@ -2,9 +2,12 @@ import fs from 'fs-extra';
 import path from 'path';
 
 import { baseFolder, generateGlobals } from './helpers/command-helpers.js';
-import { convertPackage, packageMap, warmPackage } from '../convert-meteor-package-to-npm.js';
-import { meteorNameToNodeName, meteorNameToNodePackageDir, nodeNameToMeteorName } from '../helpers/helpers.js';
+import ConversionJob from '../conversion/conversion-job.js';
+import { meteorNameToNodeName, meteorNameToNodePackageDir } from '../helpers/helpers.js';
 import { getFinalPackageListForArch } from './helpers/final-package-list';
+import MeteorPackage from '../conversion/meteor-package.js';
+import writePeerDependencies from './write-peer-dependencies.js';
+import { warn } from '../helpers/log.js';
 
 const archsToConditions = {
   'web.browser': 'Meteor.isModern',
@@ -12,26 +15,28 @@ const archsToConditions = {
 };
 // TODO: arch we shouldn't enforce that client lives in the client folder.
 // TODO: this is a mess, the combo of lazy, production and conditional (per-arch) exports
-export async function updateDependenciesForArch(outputDirectory, actualPackages, arch) {
-  const { map, conditionalMap } = await generateGlobals(outputDirectory, actualPackages.map(({ nodeName }) => nodeNameToMeteorName(nodeName)), arch);
-  await fs.writeFile(`./${arch}/dependencies.js`, actualPackages.map(({ nodeName, isLazy, onlyLoadIfProd }, i) => {
+export async function updateDependenciesForArch(nodePackagesVersionsAndExports, clientOrServer) {
+  const { map, conditionalMap } = generateGlobals(nodePackagesVersionsAndExports, clientOrServer);
+
+  const importsToWrite = [];
+  const globalsToWrite = [];
+  nodePackagesVersionsAndExports.forEach(({ nodeName, isLazy, onlyLoadIfProd }, i) => {
     if (isLazy) {
-      return '';
+      return;
     }
-    const packageName = nodeNameToMeteorName(nodeName);
-    const globals = map.get(packageName);
+    const globals = map.get(nodeName);
     if (onlyLoadIfProd) {
-      console.warn(`prod-only package ${packageName}, you need to add the correct conditional import yourself and add these if you expect the globals to be set. If you don't need the globals, no action is required`);
-      return '';
+      warn(`prod-only package ${nodeName}, you need to add the correct conditional import yourself and add these if you expect the globals to be set. If you don't need the globals, no action is required`);
+      return;
     }
     const importName = onlyLoadIfProd ? `${nodeName.replace('@', '#').replace(/\//g, '_')}` : nodeName;
-    if ((!globals || !globals.size) && !conditionalMap.has(packageName)) {
-      return `import "${importName}";`;
+    if ((!globals || !globals.size) && !conditionalMap.has(nodeName)) {
+      importsToWrite.push(`import "${importName}";`);
     }
     const imp = `import * as __package_${i} from "${importName}";`;
     const conditionals = [];
-    if (conditionalMap.has(packageName)) {
-      const conditionalsForPackage = conditionalMap.get(packageName);
+    if (conditionalMap.has(nodeName)) {
+      const conditionalsForPackage = conditionalMap.get(nodeName);
       Array.from(conditionalsForPackage.entries()).forEach(([archName, exp]) => {
         conditionals.push([
           `if (${archsToConditions[archName]}) {`,
@@ -40,20 +45,23 @@ export async function updateDependenciesForArch(outputDirectory, actualPackages,
         ].join('\n'));
       });
     }
-    return [
-      imp,
+    importsToWrite.push(imp);
+    globalsToWrite.push([
       ...(onlyLoadIfProd ? ['if (Meteor.isProduction) {'] : []),
       ...Array.from(globals).map((global) => `globalThis.${global} = __package_${i}.${global}`),
       ...conditionals,
       ...(onlyLoadIfProd ? ['}'] : []),
-    ].join('\n');
-  }).join('\n'));
+    ].join('\n'));
+  });
+  await fs.writeFile(`./${clientOrServer}/dependencies.js`, [...importsToWrite, ...globalsToWrite].filter(Boolean).join('\n'));
 }
 
 export default async function convertPackagesToNodeModulesForApp({
   extraPackages,
-  outputDirectory: outputParentFolder,
+  outputDirectory: outputGeneralDirectory,
   directories: otherPackageFolders,
+  outputSharedDirectory,
+  outputLocalDirectory,
   updateDependencies,
   meteorInstall,
   forceRefresh,
@@ -66,8 +74,7 @@ export default async function convertPackagesToNodeModulesForApp({
     .map((line) => line.split('#')[0].trim())
     .filter(Boolean);
 
-  // TODO: apply version constraints from `${baseFolder}/packages`
-  const appVersions = (await fs.readFile(`${baseFolder}/packages`))
+  const appVersions = (await fs.readFile(`${baseFolder}/versions`))
     .toString()
     .split('\n')
     .map((line) => line.split('#')[0].trim())
@@ -79,31 +86,38 @@ export default async function convertPackagesToNodeModulesForApp({
     // TODO: this assumes ./packages and ./.common are first - we should instead make this an option
     localPackageFolders: otherPackageFolders.slice(0, 2),
   };
-  await Promise.all(appVersions.map((meteorNameAndVersionConstraint) => warmPackage({
-    meteorName: meteorNameAndVersionConstraint,
-    outputParentFolder,
+
+  const job = new ConversionJob({
+    outputGeneralDirectory,
+    outputSharedDirectory,
+    outputLocalDirectory,
+    otherPackageFolders,
+    meteorInstall,
     options,
-  })));
+  });
+  appVersions.forEach((meteorNameAndVersionConstraint) => job.warmPackage(meteorNameAndVersionConstraint));
+
+  const outputFolderMapping = {
+    [MeteorPackage.Types.ISO]: outputGeneralDirectory,
+    [MeteorPackage.Types.OTHER]: outputGeneralDirectory,
+    [MeteorPackage.Types.LOCAL]: outputLocalDirectory || outputGeneralDirectory,
+    [MeteorPackage.Types.SHARED]: outputSharedDirectory || outputGeneralDirectory,
+  };
 
   const allPackages = Array.from(new Set([
     ...appPackages,
     ...extraPackages,
   ]));
-  await Promise.all(allPackages.map((meteorNameAndMaybeVersionConstraint) => convertPackage({
-    meteorName: meteorNameAndMaybeVersionConstraint,
-    meteorInstall,
-    outputParentFolder,
-    otherPackageFolders,
-    options,
-  })));
+  await Promise.all(allPackages.map((meteorNameAndMaybeVersionConstraint) => job.convertPackage(meteorNameAndMaybeVersionConstraint)));
   const actualPackages = appPackages
     .map((nameAndMaybeVersion) => nameAndMaybeVersion.split('@')[0])
-    .filter((name) => packageMap.has(name));
+    .filter((name) => job.has(name));
   const packageJsonEntries = Object.fromEntries(await Promise.all(actualPackages.map(async (meteorName) => {
-    const folderPath = path.join(outputParentFolder, meteorNameToNodePackageDir(meteorName));
+    const outputDirectory = job.get(meteorName).outputParentFolder(outputFolderMapping);
+    const folderPath = path.join(outputDirectory, meteorNameToNodePackageDir(meteorName));
     return [
       meteorNameToNodeName(meteorName),
-      await fs.pathExists(folderPath) ? `file:${folderPath}` : packageMap.get(meteorName).version,
+      await fs.pathExists(folderPath) ? `file:${folderPath}` : job.get(meteorName).version,
     ];
   })));
 
@@ -113,15 +127,25 @@ export default async function convertPackagesToNodeModulesForApp({
     ...packageJsonEntries,
   }).sort(([a], [b]) => a.localeCompare(b)));
   await fs.writeFile('./package.json', JSON.stringify(packageJson, null, 2));
-  // TODO: await write-peer-dependencies
-  // TODO: maybe await npmInstall(actualPackages);
-  const serverPackages = await getFinalPackageListForArch(actualPackages, 'server');
-  const clientPackages = await getFinalPackageListForArch(actualPackages, 'client');
+  await writePeerDependencies({ name: 'meteor-peer-dependencies' });
+  const nodePackagesAndVersions = actualPackages.map((meteorName) => {
+    const nodeName = meteorNameToNodeName(meteorName);
+    const { version } = job.get(meteorName);
+    return {
+      nodeName,
+      version,
+    };
+  });
+
+  const [serverPackages, clientPackages] = await Promise.all([
+    getFinalPackageListForArch(nodePackagesAndVersions, 'server'),
+    getFinalPackageListForArch(nodePackagesAndVersions, 'client'),
+  ]);
 
   if (updateDependencies) {
     await Promise.all([
-      updateDependenciesForArch(outputParentFolder, serverPackages, 'client'),
-      updateDependenciesForArch(outputParentFolder, clientPackages, 'server'),
+      updateDependenciesForArch(serverPackages, 'client'),
+      updateDependenciesForArch(clientPackages, 'server'),
     ]);
   }
   return allPackages;

@@ -1,4 +1,4 @@
-import { convertPackage, packageMap } from '../convert-meteor-package-to-npm.js';
+import ConversionJob from '../conversion/conversion-job.js';
 
 export default async function convertPackageToNodeModule({
   packageNames,
@@ -7,14 +7,14 @@ export default async function convertPackageToNodeModule({
   meteorInstall,
   forceRefresh,
 }) {
-  await Promise.all(packageNames.map((meteorName) => convertPackage({
-    meteorName,
-    meteorInstall,
-    outputParentFolder,
+  const job = new ConversionJob({
+    generalOutputDirectory: outputParentFolder,
     otherPackageFolders,
+    meteorInstall,
     options: {
       forceRefresh,
     },
-  })));
-  return Array.from(packageMap.keys());
+  });
+  await Promise.all(packageNames.map((meteorName) => job.convertPackage(meteorName)));
+  return Array.from(job.convertedPackageNames());
 }

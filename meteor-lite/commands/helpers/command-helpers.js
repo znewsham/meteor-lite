@@ -2,63 +2,62 @@ import fs from 'fs/promises';
 import crypto from 'crypto';
 import fsExtra from 'fs-extra';
 import path from 'path';
-import { meteorNameToNodeName, meteorNameToNodePackageDir, nodeNameToMeteorName } from '../../helpers/helpers.js';
-import { readPackageJsonForPackage } from '../../helpers/read-package-json.js';
-import { getNpmRc } from '../../helpers/ensure-npm-rc.js';
+import { error as errorLog } from '../../helpers/log';
 
 export const baseFolder = './.meteor';
 export const baseBuildFolder = `${baseFolder}/local`;
 
-let _npmRc;
-
-async function ensureNpmRc() {
-  if (!_npmRc) {
-    _npmRc = await getNpmRc();
-  }
-  return _npmRc;
-}
-
-async function getPackageExports(outputDirectory, meteorPackageName, clientOrServer, map, conditionalMap) {
-  const npmRc = await ensureNpmRc();
+function getPackageExports(nodeName, clientOrServer, packagesMap, exportsMap, conditionalsMap) {
   try {
-    if (!map.has(meteorPackageName)) {
-      map.set(meteorPackageName, new Set());
+    if (!exportsMap.has(nodeName)) {
+      exportsMap.set(nodeName, new Set());
     }
-    const packageJson = await readPackageJsonForPackage(
-      meteorNameToNodeName(meteorPackageName),
-      path.join(path.resolve(outputDirectory), meteorNameToNodePackageDir(meteorPackageName)),
-      npmRc,
-    );
+    const packageJson = packagesMap.get(nodeName);
+
     if (packageJson.meteorTmp?.implies?.[clientOrServer]?.length) {
-      await Promise.all(packageJson.meteorTmp.implies[clientOrServer].map((packageName) => getPackageExports(outputDirectory, nodeNameToMeteorName(packageName), clientOrServer, map, conditionalMap)));
+      packageJson.meteorTmp.implies[clientOrServer].map((packageName) => getPackageExports(
+        packageName,
+        clientOrServer,
+        packagesMap,
+        exportsMap,
+        conditionalsMap,
+      ));
     }
-    (packageJson.meteorTmp?.exportedVars?.[clientOrServer] || []).forEach((name) => map.get(meteorPackageName).add(name));
+    (packageJson.meteorTmp?.exportedVars?.[clientOrServer] || []).forEach((name) => exportsMap.get(nodeName).add(name));
     if (clientOrServer === 'client') {
       const webArchs = ['web.browser', 'web.browser.legacy'];
       const exportsForWebArchs = webArchs.map((webArchName) => packageJson.meteorTmp?.exportedVars?.[webArchName] || []);
       exportsForWebArchs.forEach((exp, index) => {
         if (exp.length) {
-          if (!conditionalMap.has(meteorPackageName)) {
-            conditionalMap.set(meteorPackageName, new Map());
+          if (!conditionalsMap.has(nodeName)) {
+            conditionalsMap.set(nodeName, new Map());
           }
-          conditionalMap.get(meteorPackageName).set(webArchs[index], exp);
+          conditionalsMap.get(nodeName).set(webArchs[index], exp);
         }
       });
     }
   }
   catch (e) {
-    console.error(new Error(`problem with package ${meteorPackageName}`));
-    console.error(e);
+    errorLog(new Error(`problem with package ${nodeName}`));
+    errorLog(e);
     throw e;
   }
 }
 
-export async function generateGlobals(outputDirectory, packages, clientOrServer) {
+// NOTE: this could be implemented as a recurseMeteorNodePackages function, but we've already done that and got what we need.
+export function generateGlobals(nodePackagesVersionsAndExports, clientOrServer) {
+  const packagesMap = new Map();
+  nodePackagesVersionsAndExports.forEach(({ nodeName, json }) => {
+    packagesMap.set(nodeName, json);
+  });
   const map = new Map();
   const conditionalMap = new Map();
-  const meteorPackages = packages;
-  await Promise.all(meteorPackages.map((packageName) => getPackageExports(outputDirectory, packageName, clientOrServer, map, conditionalMap)));
-  return { map, conditionalMap };
+
+  nodePackagesVersionsAndExports.forEach(({ nodeName }) => getPackageExports(nodeName, clientOrServer, packagesMap, map, conditionalMap));
+  return {
+    map,
+    conditionalMap,
+  };
 }
 
 export async function readPackageJson() {
@@ -81,8 +80,8 @@ export async function listFilesInDir(dir, depthOrBreadth = 'breadth') {
     ];
   }
   catch (e) {
-    console.error(`problem with ${dir}`);
-    console.error(e);
+    errorLog(`problem with ${dir}`);
+    errorLog(e);
     throw e;
   }
 }

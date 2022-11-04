@@ -1,5 +1,5 @@
 import path from 'path';
-import { getImportTreeForPackageAndClean } from './helpers/globals.js';
+import { getImportTreeForPackageAndClean } from '../helpers/globals.js';
 
 export default class MeteorArch {
   #archName;

@@ -1,47 +1,6 @@
-import fs from 'fs/promises';
-import { meteorNameToNodeName } from '../../helpers/helpers';
-
-async function populateDependencies(nodeName, dependenciesMap, archName, chainIsProdOnly) {
-  if (dependenciesMap.has(nodeName)) {
-    const existing = dependenciesMap.get(nodeName);
-    if (existing.isProdOnlyImplied && !chainIsProdOnly) {
-      // something not prod-only is requiring this.
-      existing.isProdOnlyImplied = false;
-    }
-    return;
-  }
-  dependenciesMap.set(nodeName, {});
-  const depPackageJSON = JSON.parse((await fs.readFile(`node_modules/${nodeName}/package.json`)).toString());
-  const isProdOnly = !!depPackageJSON.exports?.['.']?.production;
-  const isProdOnlyImplied = chainIsProdOnly;
-  dependenciesMap.set(nodeName, {
-    strong: Object.keys(depPackageJSON.meteorTmp.dependencies || {}),
-    preload: depPackageJSON.meteorTmp.preload?.[archName] || [],
-    unordered: depPackageJSON.meteorTmp.unordered?.[archName] || [],
-    isLazy: depPackageJSON.meteorTmp.lazy,
-
-    // we only care about storing 'implied' prod-only, this is because the prod only entry point of a package already handles this
-    // butwe may need to hoist the packages dependencies (and still create globals)
-    isProdOnlyImplied,
-  });
-
-  const allDeps = Array.from(new Set([
-    ...Object.keys(depPackageJSON.meteorTmp.dependencies),
-    ...depPackageJSON.meteorTmp.unordered?.[archName] || [],
-  ]));
-
-  await Promise.all(allDeps.map(async (depNodeName) => {
-    if (depNodeName === '@meteor/launch-screen') {
-      console.log('HERE', nodeName);
-    }
-    await populateDependencies(depNodeName, dependenciesMap, archName, chainIsProdOnly || isProdOnly);
-  }));
-}
+import recurseMeteorNodePackages from './recurse-meteor-node-packages';
 
 function populateReturnList(nodeName, ret, loaded, written, chain = []) {
-  if (nodeName === '@meteor/launch-screen') {
-    console.log(chain);
-  }
   if (written.has(nodeName)) {
     return;
   }
@@ -58,22 +17,92 @@ function populateReturnList(nodeName, ret, loaded, written, chain = []) {
       populateReturnList(depNodeName, ret, loaded, written, [...chain, nodeName]);
     }
   });
-  ret.push({ nodeName, isLazy: deps.isLazy, onlyLoadIfProd: deps.isProdOnlyImplied });
+  ret.push({
+    nodeName,
+    isLazy: deps.isLazy,
+    onlyLoadIfProd: deps.isProdOnlyImplied,
+    json: deps.json,
+  });
   deps.unordered.forEach((depNodeName) => {
     populateReturnList(depNodeName, ret, loaded, written, [...chain, nodeName]);
   });
 }
 
-export async function getFinalPackageListForArch(packages, archName) {
+function populateDependencies2({
+  nodeName,
+  json,
+  state,
+  dependenciesMap,
+  archName,
+}) {
+  const { chainIsProdOnly } = state;
+  if (dependenciesMap.has(nodeName)) {
+    const existing = dependenciesMap.get(nodeName);
+    if (existing.isProdOnlyImplied && !chainIsProdOnly) {
+      // something not prod-only is requiring this.
+      existing.isProdOnlyImplied = false;
+    }
+    // TODO: version control here?
+    // if we've pulled in a newer version we should replace?
+    // Or is this already handled by the version constraints earlier?
+    return [];
+  }
+  dependenciesMap.set(nodeName, {});
+  const isProdOnly = !!json.exports?.['.']?.production;
+  const isProdOnlyImplied = chainIsProdOnly;
+  dependenciesMap.set(nodeName, {
+    strong: Object.keys(json.meteorTmp.dependencies || {}),
+    preload: json.meteorTmp.preload?.[archName] || [],
+    unordered: json.meteorTmp.unordered?.[archName] || [],
+    isLazy: json.meteorTmp.lazy,
+    json,
+
+    // we only care about storing 'implied' prod-only, this is because the prod only entry point of a package already handles this
+    // butwe may need to hoist the packages dependencies (and still create globals)
+    isProdOnlyImplied,
+  });
+  const ret = [
+    ...Object.entries(json.meteorTmp.dependencies).map(([depNodeName, version]) => ({
+      nodeName: depNodeName,
+      version,
+      newState: { ...state, chainIsProdOnly: chainIsProdOnly || isProdOnly },
+    })),
+    ...Object.values(json.meteorTmp.unordered?.[archName] || {}).map((depNodeName) => ({
+      nodeName: depNodeName,
+      version: json.peerDependencies[depNodeName],
+      newState: { ...state, chainIsProdOnly: chainIsProdOnly || isProdOnly },
+    })),
+  ];
+  return ret;
+}
+
+export async function getFinalPackageListForArch(nodePackagesAndVersions, archName) {
   const loaded = new Map();
   const written = new Set();
-  await Promise.all(packages.map(async (meteorName) => {
-    const nodeName = meteorNameToNodeName(meteorName);
-    await populateDependencies(nodeName, loaded, archName);
-  }));
+
+  await recurseMeteorNodePackages(
+    nodePackagesAndVersions,
+    ({
+      nodeName,
+      requestedVersion,
+      json,
+      loadedChain,
+      state,
+      pathToLocal,
+    }) => populateDependencies2({
+      nodeName,
+      requestedVersion,
+      json,
+      loadedChain,
+      state,
+      pathToLocal,
+      // NOTE: these could both be passed in as state, not sure it's a meaningful difference
+      dependenciesMap: loaded,
+      archName,
+    }),
+  );
   const ret = [];
-  packages.forEach((meteorName) => {
-    const nodeName = meteorNameToNodeName(meteorName);
+  nodePackagesAndVersions.forEach(({ nodeName }) => {
     populateReturnList(nodeName, ret, loaded, written);
   });
 

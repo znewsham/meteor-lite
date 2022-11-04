@@ -2,7 +2,6 @@ import path from 'path';
 import vm from 'vm';
 import fs from 'fs-extra';
 import fsPromises from 'fs/promises';
-import pacote from 'pacote';
 import semver from 'semver';
 import rimraf from 'rimraf';
 import util from 'util';
@@ -12,19 +11,14 @@ import {
   meteorNameToNodeName,
   meteorNameToNodePackageDir,
   nodeNameToMeteorName,
-  sortSemver,
-  versionsAreCompatible,
-} from './helpers/helpers.js';
+} from '../helpers/helpers.js';
 
-import { getNpmRc, registryForPackage } from './helpers/ensure-npm-rc';
-
-import { ParentArchs, ExcludePackageNames } from './constants.js';
-import { getPackageGlobals, replaceGlobalsInFile, globalStaticImports } from './helpers/globals.js';
-import packageJsContext from './helpers/package-js-context.js';
-import { getExportStr, getExportMainModuleStr } from './helpers/content.js';
+import { ParentArchs, ExcludePackageNames } from '../constants.js';
+import { getPackageGlobals, replaceGlobalsInFile, globalStaticImports } from '../helpers/globals.js';
+import packageJsContext from '../helpers/package-js-context.js';
+import { getExportStr, getExportMainModuleStr } from '../helpers/content.js';
 import MeteorArch from './meteor-arch.js';
-import ensureLocalPackage from './helpers/ensure-local-package.js';
-import { warn, error as logError } from './helpers/log.js';
+import { warn, error as logError } from '../helpers/log.js';
 
 // TODO: the problem with this is some packages tests might require conflicting versions of packages they otherwise don't care about
 // e.g., our version of redis-oplog's tests require reywood:publish-composite@1.5.2 but our local version of publish-composite is 1.4.2
@@ -55,8 +49,6 @@ const CommonJSPackageNames = new Set([
   'softwarerero:accounts-t9n',
   'ecmascript-runtime-client',
 ]);
-
-export const packageMap = new Map();
 
 const SynonymArchs = new Map([
   ['legacy', 'web.browser.legacy'],
@@ -92,24 +84,29 @@ function sortImports(imports) {
   return imports;
 }
 
-function getImportStr(importsSet, isCommon) {
+function getImportStr(importsSet, isCommon, job) {
   if (isCommon) {
     return sortImports(Array.from(importsSet)).map((imp) => {
-      const suffix = packageMap.get(nodeNameToMeteorName(imp))?.isLazy() ? '/__defineOnly.js' : '';
+      const suffix = job.get(nodeNameToMeteorName(imp))?.isLazy() ? '/__defineOnly.js' : '';
       return `require("${imp}${suffix}");`;
     }).join('\n');
   }
 
   return sortImports(Array.from(importsSet)).map((imp) => {
-    const suffix = packageMap.get(nodeNameToMeteorName(imp))?.isLazy() ? '/__defineOnly.js' : '';
+    const suffix = job.get(nodeNameToMeteorName(imp))?.isLazy() ? '/__defineOnly.js' : '';
     return `import "${imp}${suffix}";`;
   }).join('\n');
 }
 
 const meteorVersionPlaceholderSymbol = Symbol('meteor-version-placeholder');
 
-class MeteorPackage {
-  static #npmrc;
+export default class MeteorPackage {
+  static Types = {
+    SHARED: Symbol('SHARED'),
+    LOCAL: Symbol('LOCAL'),
+    ISO: Symbol('ISO'),
+    OTHER: Symbol('OTHER'),
+  };
 
   #folderName;
 
@@ -160,9 +157,7 @@ class MeteorPackage {
 
   #folderPath;
 
-  #isISOPack = false;
-
-  static PackageNameToFolderPaths = new Map();
+  #type = MeteorPackage.Types.OTHER;
 
   #loadedPromise;
 
@@ -182,15 +177,15 @@ class MeteorPackage {
 
   isFullyLoaded;
 
-  #outputParentFolder;
+  #job;
 
-  #options;
-
-  // TODO: we're passing around too much global state (outputParentFolder, options)
-  constructor(meteorName, versionConstraint, isTest, outputParentFolder, options = {}) {
+  constructor({
+    meteorName,
+    versionConstraint,
+    isTest,
+    job,
+  }) {
     this.#meteorName = meteorName;
-    this.#outputParentFolder = outputParentFolder;
-    this.#options = options;
     this.#versionConstraint = versionConstraint ? `^${versionConstraint}` : versionConstraint;
     this.#writtenPromise = new Promise((resolve) => {
       this.#writtenResolve = resolve;
@@ -198,9 +193,15 @@ class MeteorPackage {
     this.#loadedPromise = new Promise((resolve) => {
       this.#loadedResolve = resolve;
     });
+    this.#job = job;
     this.#isTest = !!isTest;
     if (!isTest) {
-      this.#testPackage = new MeteorPackage('', versionConstraint, true, outputParentFolder, options);
+      this.#testPackage = new MeteorPackage({
+        meteorName: '',
+        versionConstraint,
+        isTest: true,
+        job,
+      });
     }
     else {
       this.#filePrefix = '__test';
@@ -213,8 +214,12 @@ class MeteorPackage {
     }
   }
 
-  cancel() {
+  async cancel(outputParentFolder) {
     this.#cancelled = true;
+    await this.#lock.acquire(
+      writingSymbol,
+      () => util.promisify(rimraf)(path.join(outputParentFolder, meteorNameToNodePackageDir(this.#meteorName))),
+    );
   }
 
   getArch(archName) {
@@ -255,6 +260,19 @@ class MeteorPackage {
     return allArchNames.map((archName) => this.getArch(archName));
   }
 
+  async loaded() {
+    return this.#loadedPromise;
+  }
+
+  outputParentFolder(outputDirectories) {
+    return outputDirectories[this.#type] || outputDirectories[MeteorPackage.Types.OTHER];
+  }
+
+  // TODO: remove if possible
+  get type() {
+    return this.#type;
+  }
+
   get folderName() {
     return this.#meteorName.replace(':', '_');
   }
@@ -279,6 +297,10 @@ class MeteorPackage {
       return CommonJSPackageNames.has(this.#meteorName.replace('test:', ''));
     }
     return CommonJSPackageNames.has(this.#meteorName);
+  }
+
+  get meteorName() {
+    return this.#meteorName;
   }
 
   get version() {
@@ -319,7 +341,7 @@ class MeteorPackage {
   addExports(symbols, archNames, opts) {
     const actualArchs = this.getArchs(archNames);
     if (!opts?.testOnly) {
-      // TODO: we probably need to export these
+      // TODO: we probably need to export test only stuff too...somehow
       symbols.forEach((symbol) => {
         actualArchs.forEach((arch) => {
           arch.addExport(symbol);
@@ -373,7 +395,7 @@ class MeteorPackage {
     }
     const actualArchs = this.getArchs(archNames);
     packages.forEach((dep) => {
-      const [name] = dep.split('@');
+      const [name, maybeVersionConstraint] = dep.split('@');
       if (ExcludePackageNames.has(name)) {
         return;
       }
@@ -389,8 +411,11 @@ class MeteorPackage {
       if (opts?.unordered) {
         actualArchs.forEach((arch) => arch.addUnorderedPackage(nodeName));
       }
-      // TODO should probably NEVER use version, since we can't do resolution the way we want (at least until all versions are published to npm)
-      deps[nodeName] = meteorVersionPlaceholderSymbol;
+
+      // TODO: actually use the version specifier if it exists
+      deps[nodeName] = maybeVersionConstraint
+        ? maybeVersionConstraint.split(/\s*||\s*/).map((constraint) => `^${constraint}`).join(' || ')
+        : meteorVersionPlaceholderSymbol;
       if (!opts?.unordered && !opts?.testOnly && !opts?.weak) {
         // TODO check comment in tools/isobuild/package-api.js
         this.addImport(nodeName, archNames);
@@ -439,7 +464,7 @@ class MeteorPackage {
   // eslint-disable-next-line
   getDependency(meteorNameAndMaybeVersionConstraint) {
     const [meteorName] = meteorNameAndMaybeVersionConstraint.split('@');
-    return packageMap.get(meteorName);
+    return this.#job.get(meteorName);
   }
 
   getExportsForPackageJSON() {
@@ -482,17 +507,17 @@ class MeteorPackage {
       version: this.#version && semver.coerce(this.#version).version,
       description: this.#description,
       type: this.isCommon() ? 'commonjs' : 'module',
-      dependencies: MeteorPackage.rewriteDependencies(this.#dependencies),
+      dependencies: this.rewriteDependencies(this.#dependencies),
 
-      devDependencies: CONVERT_TEST_PACKAGES ? MeteorPackage.rewriteDependencies({
+      devDependencies: CONVERT_TEST_PACKAGES ? this.rewriteDependencies({
         ...this.#testPackage.#dependencies,
         ...this.#testPackage.#meteorDependencies,
       }) : {},
-      peerDependencies: MeteorPackage.rewriteDependencies({
+      peerDependencies: this.rewriteDependencies({
         ...this.#peerDependencies,
         ...this.#meteorDependencies,
       }),
-      optionalDependencies: MeteorPackage.rewriteDependencies(this.#optionalDependencies),
+      optionalDependencies: this.rewriteDependencies(this.#optionalDependencies),
       exports: {
         ...(this.#hasTests ? {
           './__test.js': this.#testPackage.getExportsForPackageJSON(),
@@ -599,7 +624,7 @@ class MeteorPackage {
     return this.getArch(archName).getExports();
   }
 
-  async writeDependencies() {
+  async writeDependencies(outputParentFolderMapping) {
     await this.#loadedPromise;
     if (this.#alreadyWritten) {
       return true;
@@ -613,7 +638,7 @@ class MeteorPackage {
       if (!dep || !dep.isFullyLoaded) {
         return;
       }
-      await dep.writeToNpmModule();
+      await dep.writeToNpmModule(outputParentFolderMapping);
     }));
     return false;
   }
@@ -647,7 +672,7 @@ class MeteorPackage {
           fsPromises.writeFile(
             `${outputFolder}/${this.#filePrefix}__${arch.archName}.js`,
             [
-              getImportStr(arch.getImports(), this.isCommon()),
+              getImportStr(arch.getImports(), this.isCommon(), this.#job),
               ...(arch.getMainModule()
                 ? [await getExportMainModuleStr(this.#meteorName, arch.getMainModule(), outputFolder, this.isCommon())]
                 : []
@@ -673,21 +698,28 @@ class MeteorPackage {
     ]);
   }
 
-  async writeToNpmModule() {
+  async writeToNpmModule(outputParentFolderMapping) {
+    return this.#lock.acquire(writingSymbol, () => this.#writeToNpmModule(outputParentFolderMapping));
+  }
+
+  // a mapping of [MeteorPackage.Type]: absoluteOutputDirectory
+  async #writeToNpmModule(outputParentFolderMapping) {
     if (this.#cancelled) {
       return;
     }
+
+    const outputParentFolder = this.outputParentFolder(outputParentFolderMapping);
     // TODO: rework this entire function
     let state = 0;
     try {
-      const shortCircuit = await this.writeDependencies();
+      const shortCircuit = await this.writeDependencies(outputParentFolderMapping);
       if (shortCircuit) {
         return;
       }
       if (CONVERT_TEST_PACKAGES && this.#hasTests && !this.#startedWritingTest) {
         this.#startedWritingTest = true;
         try {
-          await this.#testPackage.writeDependencies();
+          await this.#testPackage.writeDependencies(outputParentFolderMapping);
         }
         catch (e) {
           e.message = `Test package problem: ${e.message}`;
@@ -695,8 +727,8 @@ class MeteorPackage {
         }
       }
       state = 1;
-      const outputFolder = path.resolve(`${this.#outputParentFolder}/${meteorNameToNodePackageDir(this.#meteorName)}`);
-      if (this.#isISOPack) {
+      const outputFolder = path.resolve(`${outputParentFolder}/${meteorNameToNodePackageDir(this.#meteorName)}`);
+      if (this.#type === MeteorPackage.Types.ISO) {
         await this.#copyISOPackResources(outputFolder);
       }
       else {
@@ -887,7 +919,7 @@ class MeteorPackage {
       state = 6;
     }
     catch (error) {
-      logError(this.#meteorName, this.#outputParentFolder, state);
+      logError(this.#meteorName, outputParentFolder, state);
       logError(error);
       throw error;
     }
@@ -985,33 +1017,9 @@ class MeteorPackage {
     }
   }
 
-  async loadFromISOPack(meteorInstall, ...otherPaths) {
-    this.#isISOPack = true;
-    const folderName = (this.#meteorName).split(':').join('_');
-    if (!await fs.pathExists(meteorInstall)) {
-      throw new Error('Meteor not installed');
-    }
-    await ensureLocalPackage({
-      meteorInstall,
-      name: this.#meteorName,
-      versionConstraint: this.#versionConstraint,
-    });
-    const basePath = path.join(meteorInstall, 'packages', folderName);
-
-    // this shouldn't be possible anymore thanks to ensureLocalPackage
-    if (!await fs.pathExists(basePath)) {
-      throw new Error(`${this.#meteorName} Package not installed by meteor`);
-    }
-    const origNames = (await fsPromises.readdir(basePath)).filter((name) => !name.startsWith('.'));
-    let names = origNames;
-    if (this.#versionConstraint) {
-      names = names.filter((name) => versionsAreCompatible(name, this.#versionConstraint));
-      names = sortSemver(names);
-    }
-    if (!names.length) {
-      throw new Error(`No matching version in ${origNames} satisfies ${this.#versionConstraint}`);
-    }
-    const fullFolder = path.join(basePath, names.slice(-1)[0]);
+  async loadFromISOPack(fullFolder) {
+    this.isFullyLoaded = true;
+    this.#type = MeteorPackage.Types.ISO;
     this.#folderPath = fullFolder;
     const fullISOPack = JSON.parse((await fsPromises.readFile(path.join(fullFolder, 'isopack.json'))).toString());
     const isopack = fullISOPack['isopack-2'] || fullISOPack['isopack-1'];
@@ -1040,29 +1048,21 @@ class MeteorPackage {
 
     // first make sure all impled or used packages are loaded
     this.#waitingWrite = (await Promise.all(
-      Array.from(this.#strongDependencies).map((packageNameAndMaybeVersionConstraint) => MeteorPackage.ensurePackage(
+      Array.from(this.#strongDependencies).map((packageNameAndMaybeVersionConstraint) => this.#job.ensurePackage(
         packageNameAndMaybeVersionConstraint,
-        this.#outputParentFolder,
-        this.#options,
-        meteorInstall,
-        ...otherPaths,
       )),
     )).filter(Boolean);
     this.#loadedResolve();
     // this.#alreadyWritten = true;
   }
 
-  async ensurePackages(meteorInstall, ...otherPaths) {
+  async ensurePackages() {
     // first make sure all impled or used packages are loaded
     this.#waitingWrite = (await Promise.all([
       ...Array.from(this.#strongDependencies).map(async (packageNameAndMaybeVersionConstraint) => {
         try {
-          return await MeteorPackage.ensurePackage(
+          return await this.#job.ensurePackage(
             packageNameAndMaybeVersionConstraint,
-            this.#outputParentFolder,
-            this.#options,
-            meteorInstall,
-            ...otherPaths,
           );
         }
         catch (e) {
@@ -1072,12 +1072,8 @@ class MeteorPackage {
       }),
       ...Array.from(this.#weakDependencies).map(async (packageNameAndMaybeVersionConstraint) => {
         try {
-          return await MeteorPackage.ensurePackage(
+          return await this.#job.ensurePackage(
             packageNameAndMaybeVersionConstraint,
-            this.#outputParentFolder,
-            this.#options,
-            meteorInstall,
-            ...otherPaths,
           );
         }
         catch (e) {
@@ -1105,7 +1101,7 @@ class MeteorPackage {
     }
   }
 
-  async loadFromNodeJSON(packageJSON, meteorInstall, ...packagesPaths) {
+  async loadFromNodeJSON(packageJSON) {
     try {
       this.isFullyLoaded = true;
       this.setBasic({
@@ -1130,12 +1126,12 @@ class MeteorPackage {
       }
       Object.entries(packageJSON.meteorTmp.dependencies).forEach(([nodeName, version]) => {
         const meteorName = nodeNameToMeteorName(nodeName);
-        this.#strongDependencies.add(meteorName);
+        this.#strongDependencies.add(version ? `${meteorName}@${version}` : meteorName);
       });
       this.#loadedResolve();
       this.#alreadyWritten = true;
 
-      await this.ensurePackages(meteorInstall, ...packagesPaths);
+      await this.ensurePackages();
       return true;
     }
     catch (e) {
@@ -1143,14 +1139,10 @@ class MeteorPackage {
     }
   }
 
-  async loadFromMeteorPackage(meteorInstall, ...otherPaths) {
+  async loadFromMeteorPackage(meteorInstall, packageJsPath, packageType) {
     try {
       this.isFullyLoaded = true;
-      const packageJsPath = await this.findPackageJs(...otherPaths);
-      if (!packageJsPath) {
-        await this.loadFromISOPack(meteorInstall, ...otherPaths);
-        return;
-      }
+      this.#type = packageType;
       this.#folderPath = path.dirname(packageJsPath);
       const script = new vm.Script((await fsPromises.readFile(packageJsPath)).toString());
       const context = packageJsContext(this, meteorInstall);
@@ -1162,10 +1154,10 @@ class MeteorPackage {
           context.onUsePromise,
           context.onTestPromise,
         ]);
-        await this.ensurePackages(meteorInstall, ...otherPaths);
+        await this.ensurePackages();
         if (CONVERT_TEST_PACKAGES && this.#hasTests) {
           try {
-            await this.#testPackage.ensurePackages(meteorInstall, ...otherPaths);
+            await this.#testPackage.ensurePackages();
           }
           catch (e) {
             e.message = `Test package problem: ${e.message}`;
@@ -1177,7 +1169,6 @@ class MeteorPackage {
         e.message = `problem parsing ${this.#meteorName}: ${e.message}`;
         throw e;
       }
-      packageMap.set(this.#meteorName, this);
       // next, find all the direct dependencies and see what they imply. Then add those to our dependencies
       Object.keys(this.#meteorDependencies)
         .forEach((dep) => {
@@ -1194,7 +1185,9 @@ class MeteorPackage {
     }
     catch (error) {
       error.message = `${this.#meteorName || this.#folderName}: ${error.message}`;
-      packageMap.delete(this.#meteorName);
+
+      // TODO: remove - need to figure out a way of removing a package when it fails (probably from job.ensurePackage)
+      this.#job.delete(this.#meteorName);
       throw error;
     }
     finally {
@@ -1203,65 +1196,10 @@ class MeteorPackage {
     }
   }
 
-  async convertFromExistingIfPossible(meteorInstall, ...packagesPaths) {
-    const alreadyConvertedJson = await MeteorPackage.alreadyConvertedJson(this.#meteorName, this.#version, this.#outputParentFolder);
-    if (alreadyConvertedJson) {
-      const isGood = await this.loadFromNodeJSON(alreadyConvertedJson, meteorInstall, ...packagesPaths);
-      return isGood;
-    }
-    return false;
-  }
-
-  async convert(meteorInstall, ...packagesPaths) {
-    if (this.#options.skipNonLocalIfPossible) {
-      const packageJsPath = await this.findPackageJs(...this.#options.localPackageFolders);
-      if (!packageJsPath) {
-        const isGood = await this.convertFromExistingIfPossible(meteorInstall, ...packagesPaths);
-        if (isGood) {
-          return;
-        }
-      }
-    }
-    await this.loadFromMeteorPackage(meteorInstall, ...packagesPaths);
-    await this.#lock.acquire(writingSymbol, () => this.writeToNpmModule());
-  }
-
-  async findPackageJs(...packagesPaths) {
-    return MeteorPackage.findPackageJs(this.#meteorName, ...packagesPaths);
-  }
-
-  static async findPackageJs(name, ...packagesPaths) {
-    const folders = MeteorPackage.foldersToSearch(...packagesPaths);
-    const tempPrioMap = new Map();
-    if (!MeteorPackage.PackageNameToFolderPaths.size) {
-      const allFolders = (await Promise.all(folders.map(async (folder) => {
-        if (!await fs.pathExists(folder)) {
-          return [];
-        }
-        const innerFolders = await fsPromises.readdir(folder, { withFileTypes: true });
-        return innerFolders.filter((innerFolder) => innerFolder.isDirectory).map((innerFolder) => path.join(folder, innerFolder.name));
-      }))).flat();
-      (await Promise.all(allFolders.map(async (folder, index) => {
-        const packageJsPath = path.join(folder, 'package.js');
-        if (!await fs.pathExists(packageJsPath)) {
-          return false;
-        }
-        const packageJs = (await fs.readFile(packageJsPath)).toString();
-        const hasName = packageJs.match(/Package\.describe\(\{[^}]+['"]?name['"]?\s*:\s*['"]([a-zA-Z0-9:-]+)["']/);
-        const name = hasName ? hasName[1] : folder.split('/').slice(-1)[0];
-        if (!tempPrioMap.has(name) || tempPrioMap.get(name) > index) {
-          tempPrioMap.set(name, index);
-          MeteorPackage.PackageNameToFolderPaths.set(name, packageJsPath);
-        }
-      })));
-    }
-    return MeteorPackage.PackageNameToFolderPaths.get(name);
-  }
-
-  static rewriteDependencies(dependencies) {
+  rewriteDependencies(dependencies) {
     return Object.fromEntries(Object.entries(dependencies).map(([name, version]) => {
       if (version === meteorVersionPlaceholderSymbol) {
-        const importedPackage = packageMap.get(MeteorPackage.nodeNameToMeteorName(name));
+        const importedPackage = this.#job.get(MeteorPackage.nodeNameToMeteorName(name));
         if (!importedPackage) {
           return undefined; // TODO?
           throw new Error(`depending on missing package ${MeteorPackage.nodeNameToMeteorName(name)}`);
@@ -1272,170 +1210,4 @@ class MeteorPackage {
       return [name, version];
     }).filter(Boolean));
   }
-
-  static foldersToSearch(...packagesPaths) {
-    // sorta hack, until we move to using ISOPacks for core/non-core packages.
-    // the meteor repo has three folders for packages, rather than listing them all (which is the better option tbh)
-    // we try appending non-core and dependencies to all paths.
-    return packagesPaths.flatMap((subPath) => [subPath, path.join(subPath, 'non-core'), path.join(subPath, 'deprecated')]);
-  }
-
-  static async ensureRegistryConfig() {
-    if (!this.#npmrc) {
-      this.#npmrc = await getNpmRc();
-    }
-  }
-
-  static async checkRegistryForConvertedPackage(meteorName, maybeVersionConstraint) {
-    const nodeName = meteorNameToNodeName(meteorName);
-    await this.ensureRegistryConfig();
-    const registry = await registryForPackage(nodeName, this.#npmrc);
-    if (registry) {
-      // TODO: we should probably "always" do this in the future.
-      // For now it'll only happen if we've explicitly pushed, which will always be to a custom registry
-      try {
-        const packageSpec = maybeVersionConstraint ? `${nodeName}@${maybeVersionConstraint}` : nodeName; // TODO: version
-        const options = {
-          fullReadJson: true,
-          fullMetadata: true,
-          where: process.cwd(),
-          registry,
-        };
-        return await pacote.manifest(packageSpec, options);
-      }
-      catch (e) {
-        return false;
-      }
-    }
-    return false;
-  }
-
-  static async alreadyConvertedPath(meteorName, outputParentFolder) {
-    const packagePath = meteorNameToNodePackageDir(meteorName);
-    const actualPath = path.join(outputParentFolder, packagePath, 'package.json');
-    if (await fs.pathExists(actualPath)) {
-      return actualPath;
-    }
-    return false;
-  }
-
-  static async alreadyConvertedJson(meteorName, maybeVersionConstraint, outputParentFolder) {
-    const actualPath = await this.alreadyConvertedPath(meteorName, outputParentFolder);
-    if (actualPath) {
-      const ret = JSON.parse((await fsPromises.readFile(actualPath)).toString());
-      if (!maybeVersionConstraint || versionsAreCompatible(ret.version, maybeVersionConstraint)) {
-        return ret;
-      }
-    }
-    return this.checkRegistryForConvertedPackage(meteorName, maybeVersionConstraint);
-  }
-
-  static async ensurePackage(meteorNameAndMaybeVersionConstraint, outputParentFolder, options, meteorInstall, ...packagesPaths) {
-    let forceUpdate = false;
-    const [meteorName, maybeVersionConstraint] = meteorNameAndMaybeVersionConstraint.split('@');
-    const versionToSatisfy = maybeVersionConstraint ? maybeVersionConstraint.split(/\s*\|\|\s*/).map((versionConstraint) => (versionConstraint.startsWith('0') ? '0.x' : `^${versionConstraint}`)).join(' || ') : undefined;
-    if (maybeVersionConstraint && packageMap.has(meteorName)) {
-      const meteorPackage = packageMap.get(meteorName);
-      await meteorPackage.#loadedPromise;
-
-      // we really want ^a.b.c - but since meteor doesn't consider minor version changes of 0 major version packages to be breaking, but semver does
-      // we're forced to go with a.x
-      // we need to coerce here to handle .rc-1 etc
-      if (meteorPackage.#version && !versionsAreCompatible(meteorPackage.#version, versionToSatisfy)) {
-        throw new Error(`invalid package version: ${meteorNameAndMaybeVersionConstraint} requested but ${meteorPackage.#version} loaded (${versionToSatisfy})`);
-      }
-      else if (!meteorPackage.#version) {
-        logError('missing read version on constrained package', meteorNameAndMaybeVersionConstraint);
-      }
-      if (semver.gt(semver.coerce(maybeVersionConstraint), semver.coerce(meteorPackage.#version))) {
-        // TODO
-        packageMap.delete(meteorName);
-        forceUpdate = true;
-        warn(
-          'we loaded an older version of package',
-          meteorName,
-          meteorPackage.#version,
-          'initially, but we\'re reloading the requested version',
-          maybeVersionConstraint,
-        );
-        meteorPackage.cancel();
-        await meteorPackage.#lock.acquire(
-          writingSymbol,
-          () => util.promisify(rimraf)(path.join(outputParentFolder, meteorNameToNodePackageDir(meteorName))),
-        );
-      }
-    }
-    if (!packageMap.has(meteorName)) {
-      const meteorPackage = new MeteorPackage(meteorName, maybeVersionConstraint, false, outputParentFolder, options);
-      packageMap.set(meteorName, meteorPackage);
-      if (!options.forceRefresh) {
-        let shouldSkip = !forceUpdate;
-        if (shouldSkip && options.localPackageFolders) {
-          // if the package exists in a "local" dir, we're not gonna convert it
-          shouldSkip = !await this.findPackageJs(meteorName, ...options.localPackageFolders);
-        }
-        if (shouldSkip) {
-          const alreadyConvertedJson = await this.alreadyConvertedJson(meteorName, maybeVersionConstraint, outputParentFolder);
-          if (alreadyConvertedJson) {
-            const isGood = await meteorPackage.loadFromNodeJSON(alreadyConvertedJson, meteorInstall, ...packagesPaths);
-            if (isGood) {
-              return false;
-            }
-          }
-        }
-      }
-      await meteorPackage.loadFromMeteorPackage(meteorInstall, ...packagesPaths);
-      if (versionToSatisfy) {
-        if (
-          semver.gt(semver.coerce(maybeVersionConstraint), semver.coerce(meteorPackage.#version))
-          || !versionsAreCompatible(meteorPackage.#version, versionToSatisfy)
-        ) {
-          throw new Error(`the loaded version ${meteorPackage.#version} of ${meteorName} does not satisfy the constraint ${versionToSatisfy}`);
-        }
-      }
-      return meteorPackage;
-    }
-
-    // if we aren't building a package, return false
-    return false;
-  }
-}
-
-// we use this to pass in version constraints ahead of time
-export async function warmPackage({
-  meteorName: meteorNameAndMaybeVersionConstraint,
-  outputParentFolder,
-  options = {},
-}) {
-  const absoluteOutputParentFolder = path.resolve(outputParentFolder);
-  const [meteorName, maybeVersionConstraint] = meteorNameAndMaybeVersionConstraint.split('@');
-  if (ExcludePackageNames.has(meteorName)) {
-    return;
-  }
-  if (packageMap.has(meteorName) && packageMap.get(meteorName).isFullyLoaded) {
-    return;
-  }
-  const meteorPackage = new MeteorPackage(meteorName, maybeVersionConstraint, false, absoluteOutputParentFolder, options);
-  packageMap.set(meteorName, meteorPackage);
-}
-
-// TODO: we're overloading name here.
-export async function convertPackage({
-  meteorName: meteorNameAndMaybeVersionConstraint,
-  meteorInstall,
-  outputParentFolder,
-  otherPackageFolders,
-  options = {},
-}) {
-  const absoluteOutputParentFolder = path.resolve(outputParentFolder);
-  const [meteorName, maybeVersionConstraint] = meteorNameAndMaybeVersionConstraint.split('@');
-  if (ExcludePackageNames.has(meteorName)) {
-    return;
-  }
-  if (packageMap.has(meteorName) && packageMap.get(meteorName).isFullyLoaded) {
-    return;
-  }
-  const meteorPackage = new MeteorPackage(meteorName, maybeVersionConstraint, false, absoluteOutputParentFolder, options);
-  packageMap.set(meteorName, meteorPackage);
-  await meteorPackage.convert(meteorInstall, ...otherPackageFolders);
 }
