@@ -4,10 +4,13 @@ import * as acornLoose from 'acorn-loose';
 import { analyze as analyzeScope } from 'escope';
 import { generate } from 'astring';
 import { walk } from 'estree-walker';
-import fsPromises, { readdir } from 'fs/promises';
+import fsPromises from 'fs/promises';
+import { attachComments } from 'estree-util-attach-comments';
+import { parse, print } from 'recast';
 import { windowGlobals } from './window-globals.js';
-import { meteorNameToNodeName, nodeNameToMeteorName } from './helpers.js';
+import { nodeNameToMeteorName } from './helpers.js';
 import { getImportTreeForFile, resolveFile } from './imports.js';
+import { warn } from './log.js';
 
 export const acornOptions = {
   ecmaVersion: 2022,
@@ -16,23 +19,88 @@ export const acornOptions = {
   allowAwaitOutsideFunction: true,
 };
 
+const warnedAboutRecast = new Set();
+
+export function parseContentsToAST(contents, {
+  attachComments: shouldAttachComments = false,
+  loose = false,
+  file,
+  raw = false,
+} = {}) {
+  const comments = [];
+  const parser = loose ? acornLoose : acorn;
+  try {
+    let ast;
+    if (raw) {
+      ast = parser.parse(contents, {
+        ...acornOptions,
+        ...(shouldAttachComments && { onComment: comments }),
+      });
+      if (shouldAttachComments) {
+        attachComments(ast, comments);
+      }
+      return ast;
+    }
+    ast = parse(contents, {
+      parser: {
+        parse(src) {
+          return parser.parse(src, {
+            ...acornOptions,
+          });
+        },
+      },
+    });
+    return ast.program;
+  }
+  catch (error) {
+    if (!raw) {
+      try {
+        const ret = parseContentsToAST(contents, { attachComments: shouldAttachComments, loose, file, raw: true });
+        if (file && !warnedAboutRecast.has(file)) {
+          // TODO: way too noisy
+          // warn(`${file || 'unknown file'} couldn't be parsed with recast, the structure and comments will possibly be lost`);
+          warnedAboutRecast.add(file);
+        }
+        return ret;
+      }
+      catch (e) {
+        // do nothing
+      }
+    }
+    if (file) {
+      error.message = `${file}${loose ? ' (loose) ' : ''}: ${error.message}`;
+    }
+    // we're throwing a new error because the stack we get is totally useless
+    throw new Error(error.message);
+  }
+}
+
+export function astToCode(ast) {
+  try {
+    const code = print(ast).code;
+
+    // sometimes recast generates code that can't be parsed - something wrong with what we're doing + comments.
+    // An exampel is qualia:core/lib/helpers.js where a comment is bumped *down* a line and converted to a leading comment
+    // which effectively comments out a closing brace
+    // TODO: remove this, it's so horrible.
+    parseContentsToAST(code);
+    return code;
+  }
+  catch (e) {
+    return generate(ast);
+  }
+}
+
+export const generateOptions = {
+  comments: true,
+};
+
 // some packages may depend on things that meteor sets up as a global.
 // let's nip that in the bud.
 // TODO: remove
 export const globalStaticImports = new Map([
   ['Meteor', '@meteor/meteor'],
   ['global', '@meteor/meteor'],
-]);
-
-const excludeFindImports = new Set([
-  'package.js',
-  '__client.js',
-  '__server.js',
-  '__globals.js',
-  '__client_module.js',
-  '__server_module.js',
-  '__client_assets.js',
-  '__server_assets.js',
 ]);
 
 function getOwnPropertyNames() {
@@ -62,8 +130,6 @@ const globalBlacklist = new Set([
 
 globalBlacklist.delete('global'); // meteor does some fuckery here
 
-const excludeFolders = new Set(['.npm', 'node_modules']);
-
 // super gnarly bandaid solution, just to test if the "globals are only package globals if they're assigned"
 // we treat all these as package globals.
 const BAD = new Set(['exports', 'module', 'require', 'Npm', 'Assets']);
@@ -84,9 +150,6 @@ export async function replaceGlobalsInFile(
   packageGlobalsSet,
   serverOnlyImportsSet,
 ) {
-  const isClientArch = archs && (archs.has('client') || Array.from(archs).find((arch) => arch.startsWith('web.')));
-  const isServerArch = archs && archs.has('server');
-  const isClientServerArch = isClientArch && isServerArch;
   const isMultiArch = archs?.size > 1;
   const archName = archs?.size === 1 ? Array.from(archs)[0] : undefined;
   const imports = new Map();
@@ -355,9 +418,12 @@ async function getCleanAST(file) {
     let contents = (await fsPromises.readFile(file)).toString();
     let ast;
     try {
-      ast = acorn.parse(
+      ast = parseContentsToAST(
         contents,
-        acornOptions,
+        {
+          file,
+          attachComments: true,
+        },
       );
       return { ast, requiresCleaning: false };
     }
@@ -366,9 +432,13 @@ async function getCleanAST(file) {
       // an example is qualia:core/lib/helpers.js where daysBetweenUsing365DayYear gets "replaced" with a unicode X
       // so if we fail to parse with acorn, we parse with acornLoose and manually fix the exported globals (hopefully the reason)
       // then re-parse with acorn.
-      ast = acornLoose.parse(
+
+      ast = parseContentsToAST(
         contents,
-        acornOptions,
+        {
+          loose: true,
+          attachComments: true,
+        },
       );
       const all = [
         ...fixReservedUsage(ast),
@@ -385,15 +455,18 @@ async function getCleanAST(file) {
             specifier.local.name = `_${specifier.local.name}`;
             return ret;
           }).join('\n');
-          contents = `${prefix}\n${declaration}\n${generate(node)}\n${suffix}`;
+          contents = `${prefix}\n${declaration}\n${astToCode(node)}\n${suffix}`;
         }
         else if (type === 'reserved') {
           contents = `${prefix}___${node.name}${suffix}`;
         }
       });
-      ast = acorn.parse(
+      ast = parseContentsToAST(
         contents,
-        acornOptions,
+        {
+          file,
+          attachComments: true,
+        },
       );
       return { ast, requiresCleaning: true };
     }
@@ -592,7 +665,7 @@ async function maybeCleanAST(file, isCommon, exportedMap) {
     if (hasRequires && importEntries.size) {
       //throw new Error(`Imports and requires in ${file} (fixable)`);
     }
-    await fsPromises.writeFile(file, generate(ast));
+    await fsPromises.writeFile(file, astToCode(ast));
   }
   return ast;
 }
@@ -668,7 +741,13 @@ export async function getImportTreeForPackageAndClean(
 
 async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
   const fileContents = (await fsPromises.readFile(file)).toString();
-  const ast = acorn.parse(fileContents, acornOptions);
+  const ast = parseContentsToAST(
+    fileContents,
+    {
+      file,
+      attachComments: true,
+    },
+  );
   const hasRewrittenImportsOrExports = maybeRewriteImportsOrExports(ast);
   const hasRewrittenRequires = maybeRewriteRequire(ast);
   const hasGlobalThis = maybeRewriteGlobalThis(ast);
@@ -684,6 +763,9 @@ async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
     nodejsScope: true,
   });
   const currentScope = scopeManager.acquire(ast);
+  if (!currentScope) {
+    console.log(ast);
+  }
   const all = new Set([
     ...currentScope.implicit.variables.map((entry) => entry.identifier.name),
     ...currentScope.implicit.left.filter((entry) => entry.identifier
@@ -717,7 +799,7 @@ async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
   map.set(file, all);
   assignedMap.set(file, assigned);
   if (hasRewrittenImportsOrExports || hasRewrittenRequires || hasRewrittenAwait || hasGlobalThis) {
-    await fsPromises.writeFile(file, generate(ast));
+    await fsPromises.writeFile(file, astToCode(ast));
   }
 }
 
@@ -769,9 +851,11 @@ export function rewriteFileForPackageGlobals(contents, packageGlobalsSet, isMult
     // no short circuting, we need to handle serverOnlyImports too :'(
     // return contents;
   }
-  const ast = acorn.parse(
+  const ast = parseContentsToAST(
     contents,
-    acornOptions,
+    {
+      attachComments: true,
+    },
   );
   const scopeManager = analyzeScope(ast, {
     ecmaVersion: 6,
@@ -847,5 +931,5 @@ export function rewriteFileForPackageGlobals(contents, packageGlobalsSet, isMult
       }
     },
   });
-  return generate(ast);
+  return astToCode(ast);
 }

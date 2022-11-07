@@ -230,11 +230,10 @@ async function buildClient({
 }) {
   const entryPoint = packageJson.meteor.mainModule[archName] || packageJson.meteor.mainModule.client;
   const outdir = `${outputBuildFolder}/${archName}`;
-  let isRoot = true;
   let isInitial = true;
-  let rootBuild;
   const cacheDirectory = path.resolve(path.join(outputBuildFolder, 'cache'));
   await fsExtra.ensureDir(cacheDirectory);
+  const wasPaused = new Map();
   // eslint-disable-next-line
   const build = await esbuild.build({
     minify: isProduction,
@@ -266,11 +265,14 @@ async function buildClient({
           return;
         }
         if (appProcess) {
-          await appProcess.pauseClient(archName);
+          wasPaused.set(archName, await appProcess.pauseClient(archName));
         }
       }),
       onEnd(async (build, result) => {
         if (isInitial) {
+          return;
+        }
+        if (result.errors?.length) {
           return;
         }
         await writeProgramJSON(
@@ -282,7 +284,8 @@ async function buildClient({
             outputBuildFolder,
           },
         );
-        if (appProcess) {
+        // if the process was killed (e.g., a parallel server rebuild) then there's no need to refresh the client.
+        if (appProcess && wasPaused.get(archName)) {
           appProcess.refreshClient(archName);
         }
       }),

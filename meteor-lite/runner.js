@@ -41,8 +41,37 @@ program
 
 program
   .command('dev-run')
-  .action(async () => {
-    await run(DefaultArchs);
+  // You must have already built all the correct versions of the external dependencies
+  // we won't re-gen the dependencies file
+  .option('-w, --watch', 'build and watch the pacakges and .common directory?')
+  .option('-m, --meteor <meteorInstall>', 'path to the meteor install')
+  .option('-o, --outputDirectory <outputDirectory>', 'the output directory')
+  .option('--outputLocalDirectory <outputLocalDirectory>', 'the output directory for packages in the packages directory')
+  .option('--outputSharedDirectory <outputSharedDirectory>', 'the output directory for packages in the METEOR_PACKAGE_DIRS directory')
+  .action(async ({
+    watch: buildAndWatchPackages,
+    outputSharedDirectory,
+    outputDirectory,
+    outputLocalDirectory,
+    meteor,
+  }) => {
+    let job;
+    if (buildAndWatchPackages) {
+      if (!outputDirectory) {
+        throw new Error('must specify output directory');
+      }
+      console.log('running in watch mode...building the local/shared packages');
+      job = await convertPackagesForApp({
+        extraPackages: [],
+        directories: [],
+        outputDirectory,
+        outputSharedDirectory,
+        outputLocalDirectory,
+        meteorInstall: meteor || `${os.homedir()}/.meteor`,
+      });
+      console.log('build complete');
+    }
+    await run(DefaultArchs, { buildAndWatchPackages, job });
   });
 
 program
@@ -73,13 +102,10 @@ program
     meteor,
     forceRefresh,
   }) => {
-    if (!directories) {
-      throw new Error('must specify search directories');
-    }
     if (!outputDirectory) {
       throw new Error('must specify output directory');
     }
-    console.log(await convertPackagesForApp({
+    await convertPackagesForApp({
       extraPackages: packages,
       outputDirectory,
       outputSharedDirectory,
@@ -88,7 +114,11 @@ program
       updateDependencies: update,
       meteorInstall: meteor || `${os.homedir()}/.meteor`,
       forceRefresh,
-    }));
+    });
+
+    // while you might think this line is superflous, it's very useful.
+    // In some situations the conversion can deadlock in which case it exits with no output
+    console.log('complete');
   });
 
 program

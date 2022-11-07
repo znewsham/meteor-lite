@@ -29,6 +29,8 @@ export default class ConversionJob {
 
   #otherPackageFolders;
 
+  #allPackageFolders;
+
   #meteorInstall;
 
   #options;
@@ -52,9 +54,14 @@ export default class ConversionJob {
     this.#outputGeneralDirectory = path.resolve(outputGeneralDirectory);
     this.#outputSharedDirectory = path.resolve(outputSharedDirectory || outputGeneralDirectory);
     this.#outputLocalDirectory = path.resolve(outputLocalDirectory || outputGeneralDirectory);
-    this.#otherPackageFolders = otherPackageFolders.map((folderName) => path.resolve(folderName));
     this.#localFolder = path.resolve('packages');
     this.#sharedFolder = process.env.METEOR_PACKAGE_DIRS && path.resolve(process.env.METEOR_PACKAGE_DIRS);
+    this.#otherPackageFolders = otherPackageFolders.map((folderName) => path.resolve(folderName));
+    this.#allPackageFolders = [
+      this.#localFolder,
+      this.#sharedFolder,
+      ...this.#otherPackageFolders,
+    ].filter(Boolean);
     this.#meteorInstall = meteorInstall;
     this.#options = options;
   }
@@ -66,6 +73,14 @@ export default class ConversionJob {
       [MeteorPackage.Types.LOCAL]: this.#outputLocalDirectory,
       [MeteorPackage.Types.SHARED]: this.#outputSharedDirectory,
     };
+  }
+
+  async reconvert(meteorPackage) {
+    meteorPackage.isFullyLoaded = false;
+    meteorPackage.allowRebuild();
+    await this.loadPackage(meteorPackage, meteorPackage.version);
+    await meteorPackage.writeToNpmModule(this.#outputDirectories());
+    return true;
   }
 
   async convertPackage(meteorNameAndMaybeVersionConstraint) {
@@ -214,7 +229,7 @@ export default class ConversionJob {
     const map = localOnly ? this.#localPackageNameToFolderPaths : this.#packageNameToFolderPaths;
     if (!localOnly && !this.#packageNameToFolderPaths.size) {
       await this.#populatePackageNameToFolderPaths(
-        [this.#localFolder, this.#sharedFolder, ...this.#otherPackageFolders].filter(Boolean),
+        this.#allPackageFolders,
         this.#packageNameToFolderPaths,
       );
     }
@@ -280,6 +295,7 @@ export default class ConversionJob {
 
     let meteorPackage = this.#packageMap.get(meteorName);
     if (maybeVersionConstraint && meteorPackage?.isFullyLoaded) {
+      // TODO: this whole block is gnarly - it would be better to somehow get the final list of versions, then load exactly those
       if (!meteorPackage.version) {
         await meteorPackage.loaded();
       }
@@ -292,8 +308,13 @@ export default class ConversionJob {
       else if (!meteorPackage.version) {
         logError('missing read version on constrained package', meteorNameAndMaybeVersionConstraint);
       }
-      if (semver.gt(semver.coerce(maybeVersionConstraint), semver.coerce(meteorPackage.version))) {
-        this.#packageMap.delete(meteorName);
+      if (!meteorPackage.isLocalOrShared() && semver.gt(semver.coerce(maybeVersionConstraint), semver.coerce(meteorPackage.version))) {
+        // this makes things really hard - for example if EJSON reloads and deanius:promise depends on EJSON and has already started converting
+        // we need to pause deanius:promise - so we need to "cancelAndDelete" EJSON, then pause the entire tree from there
+        // the only time this would be necessary would be if something depends on an export that exists in 1.2.4 but not 1.2.3
+        // in this case of direct dependency we should already be fine since this is the point at which that dependency is loaded
+        // so awaiting below is all that is necessary
+        // this.#packageMap.delete(meteorName);
         forceUpdate = true;
         warn(
           'we loaded an older version of package',
@@ -303,6 +324,7 @@ export default class ConversionJob {
           maybeVersionConstraint,
         );
         await meteorPackage.cancelAndDelete(meteorPackage.outputParentFolder(this.#outputDirectories()));
+        await meteorPackage.rewriteDependants(this.#outputDirectories());
       }
     }
     if (!this.#packageMap.get(meteorName)?.isFullyLoaded) {
@@ -348,6 +370,10 @@ export default class ConversionJob {
   get(meteorNameAndMaybeVersionConstraint) {
     const [name] = meteorNameAndMaybeVersionConstraint.split('@');
     return this.#packageMap.get(name);
+  }
+
+  getAllLocal() {
+    return Array.from(this.#packageMap.values()).filter((meteorPackage) => meteorPackage.isLocalOrShared());
   }
 
   // TODO: remove

@@ -9,7 +9,7 @@ async function callbackWrapper(meteorPackage, meteorInstall, cb, isTest = false)
   let meteorVersion;
   cb({
     versionsFrom(version) {
-      meteorVersion = version;
+      meteorVersion = Array.isArray(version) ? version.join(' || ') : version;
     },
     export(symbol, archOrArchs, maybeOpts) {
       if (isTest) {

@@ -4,6 +4,7 @@ import fsExtra from 'fs-extra';
 import { baseBuildFolder } from './helpers/command-helpers';
 import generateServer, { generateConfigJson } from './helpers/generate-server';
 import generateWebBrowser from './helpers/generate-web-browser';
+import watchPackages from './helpers/watch-packages';
 
 class AppProcess {
   constructor(archs) {
@@ -13,15 +14,23 @@ class AppProcess {
   async restartServer() {
     this.process.removeAllListeners('close');
     this.process.removeAllListeners('error');
+    const died = new Promise((resolve) => {
+      this.process.on('exit', () => {
+        resolve();
+      });
+    });
     this.process.kill();
+    this.process = undefined;
+    await died;
     await this.spawn();
   }
 
   async pauseClient(arch) {
     if (!this.process) {
-      return undefined;
+      return false;
     }
-    return this.process.sendMessage('webapp-pause-client', { arch });
+    await this.process.sendMessage('webapp-pause-client', { arch });
+    return true;
   }
 
   async rebuildProgram() {
@@ -50,7 +59,7 @@ class AppProcess {
     this.process = spawn(
       'node',
       [
-        '--inspect',
+        '--inspect=0.0.0.0:9229',
         '--no-wasm-code-gc', //TODO  hack
         '--experimental-specifier-resolution=node',
         '--conditions=development',
@@ -81,13 +90,20 @@ class AppProcess {
   }
 
   static async LoadInterProcessMessaging() {
+    // these probably don't "need" to be dynamic anymore, but since this is the package that builds thes
+    // it seems prudent to make them dynamic (so we can build them if they don't exist)
     await import('@meteor/modern-browsers');
     return import('@meteor/inter-process-messaging');
   }
 }
 
-export default async function run(archs) {
+export default async function run(archs, { buildAndWatchPackages, job } = {}) {
   const appProcess = new AppProcess(archs);
+
+  if (buildAndWatchPackages) {
+    watchPackages(job);
+  }
+
   let start = new Date().getTime();
   await Promise.all(archs.map((archName) => generateWebBrowser(
     archName,

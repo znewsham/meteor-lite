@@ -19,6 +19,7 @@ import packageJsContext from '../helpers/package-js-context.js';
 import { getExportStr, getExportMainModuleStr } from '../helpers/content.js';
 import MeteorArch from './meteor-arch.js';
 import { warn, error as logError } from '../helpers/log.js';
+import { listFilesInDir } from '../commands/helpers/command-helpers.js';
 
 // TODO: the problem with this is some packages tests might require conflicting versions of packages they otherwise don't care about
 // e.g., our version of redis-oplog's tests require reywood:publish-composite@1.5.2 but our local version of publish-composite is 1.4.2
@@ -144,6 +145,8 @@ export default class MeteorPackage {
 
   #strongDependencies = new Set();
 
+  #dependedOn = new Map();
+
   // non weak, non unordered
   #immediateDependencies = new Set();
 
@@ -178,6 +181,8 @@ export default class MeteorPackage {
   isFullyLoaded;
 
   #job;
+
+  #filesToWatch = [];
 
   constructor({
     meteorName,
@@ -214,7 +219,11 @@ export default class MeteorPackage {
     }
   }
 
-  async cancel(outputParentFolder) {
+  allowRebuild() {
+    this.#alreadyWritten = false;
+  }
+
+  async cancelAndDelete(outputParentFolder) {
     this.#cancelled = true;
     await this.#lock.acquire(
       writingSymbol,
@@ -271,6 +280,17 @@ export default class MeteorPackage {
   // TODO: remove if possible
   get type() {
     return this.#type;
+  }
+
+  isLocalOrShared() {
+    return [MeteorPackage.Types.LOCAL, MeteorPackage.Types.SHARED].includes(this.#type);
+  }
+
+  filesToWatch() {
+    if (!this.isLocalOrShared()) {
+      return [];
+    }
+    return this.#filesToWatch;
   }
 
   get folderName() {
@@ -380,6 +400,10 @@ export default class MeteorPackage {
     });
   }
 
+  addDependendedOn(meteorPackage) {
+    this.#dependedOn.set(meteorPackage.meteorName, meteorPackage);
+  }
+
   addMeteorDependencies(packages, archNames, opts) {
     if (opts?.testOnly) {
       this.#hasTests = true;
@@ -414,7 +438,7 @@ export default class MeteorPackage {
 
       // TODO: actually use the version specifier if it exists
       deps[nodeName] = maybeVersionConstraint
-        ? maybeVersionConstraint.split(/\s*||\s*/).map((constraint) => `^${constraint}`).join(' || ')
+        ? maybeVersionConstraint.split(/\s*\|\|\s*/).map((constraint) => `^${constraint}`).join(' || ')
         : meteorVersionPlaceholderSymbol;
       if (!opts?.unordered && !opts?.testOnly && !opts?.weak) {
         // TODO check comment in tools/isobuild/package-api.js
@@ -624,6 +648,16 @@ export default class MeteorPackage {
     return this.getArch(archName).getExports();
   }
 
+  async rewriteDependants(outputParentFolderMapping) {
+    console.log('rewriting', this.#meteorName);
+    try {
+      return Promise.all(Array.from(this.#dependedOn.values()).map((meteorPackage) => meteorPackage.writeDependencies(outputParentFolderMapping)));
+    }
+    finally {
+      console.log('finished rewriting', this.#meteorName);
+    }
+  }
+
   async writeDependencies(outputParentFolderMapping) {
     await this.#loadedPromise;
     if (this.#alreadyWritten) {
@@ -745,6 +779,7 @@ export default class MeteorPackage {
             },
           },
         );
+        this.#filesToWatch = await listFilesInDir(actualPath);
       }
       state = 2;
       const { archsForFiles, exportedMap } = await this.getImportTreeForPackageAndClean(outputFolder);
@@ -1053,6 +1088,7 @@ export default class MeteorPackage {
       )),
     )).filter(Boolean);
     this.#loadedResolve();
+    await this.ensurePackages();
     // this.#alreadyWritten = true;
   }
 
@@ -1089,6 +1125,7 @@ export default class MeteorPackage {
       this.#strongDependencies.forEach((packageNameAndMaybeVersionConstraint) => {
         const [packageName] = packageNameAndMaybeVersionConstraint.split('@');
         const requiredPackage = this.getDependency(packageNameAndMaybeVersionConstraint);
+        requiredPackage.addDependendedOn(this);
         if (!requiredPackage.isCommon()) {
           const nodeName = meteorNameToNodeName(packageName);
           this.getAllArchs().forEach((arch) => {

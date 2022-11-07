@@ -32,6 +32,7 @@ export async function updateDependenciesForArch(nodePackagesVersionsAndExports, 
     const importName = onlyLoadIfProd ? `${nodeName.replace('@', '#').replace(/\//g, '_')}` : nodeName;
     if ((!globals || !globals.size) && !conditionalMap.has(nodeName)) {
       importsToWrite.push(`import "${importName}";`);
+      return;
     }
     const imp = `import * as __package_${i} from "${importName}";`;
     const conditionals = [];
@@ -57,9 +58,9 @@ export async function updateDependenciesForArch(nodePackagesVersionsAndExports, 
 }
 
 export default async function convertPackagesToNodeModulesForApp({
-  extraPackages,
+  extraPackages = [],
   outputDirectory: outputGeneralDirectory,
-  directories: otherPackageFolders,
+  directories: otherPackageFolders = [],
   outputSharedDirectory,
   outputLocalDirectory,
   updateDependencies,
@@ -148,5 +149,5 @@ export default async function convertPackagesToNodeModulesForApp({
       updateDependenciesForArch(clientPackages, 'server'),
     ]);
   }
-  return allPackages;
+  return job;
 }

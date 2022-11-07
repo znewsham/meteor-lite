@@ -28,4 +28,11 @@ export const ExcludePackageNames = new Set([
   'standard-minifier-js',
   'dynamic-import', // this has a strong dependency on modules
   'hot-module-replacement', // this has a strong dependency on modules
+  'meteor-tool',
+  'ddp-client-isopacket',
+  'isobuild:linter-plugin',
+
+  // these are just helpers so we can pass in the packages directory for conversion
+  'deprecated',
+  'non-core',
 ]);

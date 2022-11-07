@@ -4,7 +4,10 @@ import sqlite3 from 'sqlite3';
 import fetch from 'node-fetch';
 import targz from 'targz';
 import semver from 'semver';
+import rimraf from 'rimraf';
+import Util from 'util';
 import { meteorNameToLegacyPackageDir, sortSemver, versionsAreCompatible } from './helpers';
+import { warn } from './log';
 
 const DBMap = new Map();
 
@@ -80,6 +83,11 @@ async function installPackage(packageVersionObject, packageVersionBuildObject, m
   // erasaur:meteor-lodash-3.1.0-os+web.browser+web.cordova
   // otherpackage-x.y.z
   const internalFolderName = (await fs.readdir(extractFolderPath))[0];
+  if (await fs.pathExists(pathToPackage)) {
+    // TODO: something feels wrong here
+    warn('why does this path exist?!', pathToPackage);
+    await Util.promisify(rimraf)(pathToPackage);
+  }
   await fs.move(
     path.join(extractFolderPath, internalFolderName),
     pathToPackage,
@@ -114,10 +122,9 @@ export async function getCorePackageVersion({
   appVersion = '2.5', // TODO: take this as an argument
 }) {
   const db = getPackageDb(meteorInstall);
-
   const actualVersion = meteorVersion.split('@').reverse()[0];
 
-  const requestedReleaseObject = await getOne(db, `SELECT * FROM releaseVersions WHERE track="METEOR" AND version='${actualVersion}'`);
+  const requestedReleaseObject = await getOne(db, `SELECT * FROM releaseVersions WHERE track="METEOR" AND version IN ('${actualVersion.split(' || ').join("', '")}')`);
   const appReleaseObject = await getOne(db, `SELECT * FROM releaseVersions WHERE track="METEOR" AND version='${appVersion}'`);
   const requestedContent = JSON.parse(requestedReleaseObject.content);
   const appContent = JSON.parse(appReleaseObject.content);

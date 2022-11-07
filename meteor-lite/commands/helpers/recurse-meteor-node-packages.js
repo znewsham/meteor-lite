@@ -27,11 +27,7 @@ export default async function recurseMeteorNodePackages(
       if (registry) {
         options.registry = registry;
       }
-      if (nodeName.startsWith('@@')) {
-        console.log(new Error());
-        process.exit();
-      }
-      const packageSpec = version ? `${nodeName}@${version}` : nodeName;
+      const packageSpec = version ? `${nodeName}@^${version}` : nodeName;
       const has = packageJsonMap.has(packageSpec);
       let json = packageJsonMap.get(packageSpec);
       let pathToLocal;
@@ -58,16 +54,22 @@ export default async function recurseMeteorNodePackages(
         }
         if (!json) {
           try {
-            json = await pacote.manifest(packageSpec, options);
+            const actualPackageSpec = await pacote.resolve(packageSpec, options);
+            json = await pacote.manifest(actualPackageSpec, options);
           }
           catch (e) {
-            warn(`Couldn't load ${newState?.isWeak ? 'weak ' : ''}package: ${packageSpec} because ${e.message} loaded by ${loadedChain}`);
-            if (!newState?.isWeak) {
-              throw e;
+            json = packageJsonMap.get(packageSpec);
+            if (!json) {
+              // so we don't warn on a race condition
+              warn(`Couldn't load ${newState?.isWeak ? 'weak ' : ''}package: ${packageSpec} because ${e.message} loaded by ${loadedChain}`);
+              if (!newState?.isWeak) {
+                throw e;
+              }
+              json = {};
             }
           }
         }
-        packageJsonMap.set(`${nodeName}@${version}`, json);
+        packageJsonMap.set(packageSpec, json);
       }
 
       // we really only care about meteor packages
