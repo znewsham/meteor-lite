@@ -13,9 +13,9 @@ function getPackageExports(nodeName, clientOrServer, packagesMap, exportsMap, co
       exportsMap.set(nodeName, new Set());
     }
     const packageJson = packagesMap.get(nodeName);
-
-    if (packageJson.meteorTmp?.implies?.[clientOrServer]?.length) {
-      packageJson.meteorTmp.implies[clientOrServer].map((packageName) => getPackageExports(
+    const implied = packageJson.meteorTmp?.implies?.filter(({ archs }) => !archs || archs.includes(clientOrServer));
+    if (implied?.length) {
+      implied.map(({ name: packageName }) => getPackageExports(
         packageName,
         clientOrServer,
         packagesMap,

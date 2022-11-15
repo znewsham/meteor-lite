@@ -2,13 +2,18 @@ import { spawn } from 'child_process';
 import path from 'path';
 import fsExtra from 'fs-extra';
 import { baseBuildFolder } from './helpers/command-helpers';
-import generateServer, { generateConfigJson } from './helpers/generate-server';
-import generateWebBrowser from './helpers/generate-web-browser';
+import generateServer, { generateConfigJson } from '../build-run/server/generate-server';
+import generateWebBrowser from '../build-run/client/generate-web-browser';
 import watchPackages from './helpers/watch-packages';
 
 class AppProcess {
-  constructor(archs) {
-    this.archs = archs;
+  #testMetadata;
+
+  #archs;
+
+  constructor(archs, { testMetadata } = {}) {
+    this.#archs = archs;
+    this.#testMetadata = testMetadata;
   }
 
   async restartServer() {
@@ -35,7 +40,7 @@ class AppProcess {
 
   async rebuildProgram() {
     return generateConfigJson({
-      archs: this.archs,
+      archs: this.#archs,
     });
   }
 
@@ -50,6 +55,13 @@ class AppProcess {
     // If arch is not a string, the receiver of this message should
     // assume all clients need to be refreshed.
     await this.process.sendMessage('client-refresh');
+  }
+
+  #getTestMetadata() {
+    if (!this.#testMetadata) {
+      return '{}';
+    }
+    return JSON.stringify(this.#testMetadata);
   }
 
   async spawn() {
@@ -72,6 +84,7 @@ class AppProcess {
           METEOR_SHELL_DIR: shellDir,
           ...process.env,
           NODE_ENV: 'development',
+          TEST_METADATA: this.#getTestMetadata(),
         },
       },
     );
@@ -97,11 +110,11 @@ class AppProcess {
   }
 }
 
-export default async function run(archs, { buildAndWatchPackages, job } = {}) {
-  const appProcess = new AppProcess(archs);
+export default async function run(archs, { buildAndWatchPackages, job, watchAll = false, testMetadata } = {}) {
+  const appProcess = new AppProcess(archs, { testMetadata });
 
   if (buildAndWatchPackages) {
-    watchPackages(job);
+    watchPackages(job, { watchAll });
   }
 
   let start = new Date().getTime();

@@ -3,10 +3,10 @@ import { ExcludePackageNames } from '../constants';
 import { meteorNameToNodeName } from '../helpers/helpers';
 import calculateVersions from './helpers/calculate-versions';
 
-export default async function writePeerDependencies({ name }) {
+export default async function writePeerDependencies({ name, nodePackagesAndVersions }) {
   const packageJson = JSON.parse((await fs.readFile('./package.json')).toString());
-  let meteorPackageNamesMaybeWithVersions;
-  if (await fs.pathExists('.meteor/packages')) {
+  let meteorPackageNamesMaybeWithVersions = nodePackagesAndVersions;
+  if (!nodePackagesAndVersions && await fs.pathExists('.meteor/packages')) {
     meteorPackageNamesMaybeWithVersions = (await fs.readFile('.meteor/packages')).toString()
       .split('\n')
       .filter((line) => !line.startsWith('#'))
@@ -25,7 +25,7 @@ export default async function writePeerDependencies({ name }) {
       })
       .filter(Boolean);
   }
-  else {
+  else if (!nodePackagesAndVersions) {
     meteorPackageNamesMaybeWithVersions = Object.entries(packageJson.dependencies)
       .map(([nodeName, version]) => ({
         nodeName,
@@ -36,6 +36,7 @@ export default async function writePeerDependencies({ name }) {
       .filter(({ version }) => !version.startsWith('git'));
   }
 
+  // TODO: make calculateVersions work with the meteor constraint solver.
   const { finalVersions, badVersions } = await calculateVersions(meteorPackageNamesMaybeWithVersions);
   Object.keys(finalVersions).forEach((nodeName) => {
     if (packageJson.dependencies[nodeName]) {

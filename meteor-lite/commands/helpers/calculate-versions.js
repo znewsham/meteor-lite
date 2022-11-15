@@ -1,6 +1,8 @@
 import semver from 'semver';
 import path from 'path';
 import recurseMeteorNodePackages from './recurse-meteor-node-packages.js';
+import { meteorVersionToSemver, sortSemver, versionsAreCompatible } from '../../helpers/helpers.js';
+import { warn } from '../../helpers/log.js';
 
 // TODO: do this properly
 function relativePathForBase(absoluteBasePath, relativePath) {
@@ -18,6 +20,7 @@ export default async function calculateVersions(nodePackagesAndVersions) {
     loadedChain,
     state,
     pathToLocal,
+    evaluateTestPackage,
   }) => {
     let versionsMap = strongVersionsMap;
     if (pathToLocal) {
@@ -29,7 +32,7 @@ export default async function calculateVersions(nodePackagesAndVersions) {
     if (!versionsMap.has(nodeName)) {
       versionsMap.set(nodeName, new Set());
     }
-    if (requestedVersion) {
+    if (requestedVersion && !requestedVersion.startsWith('file:')) {
       versionsMap.get(nodeName).add(requestedVersion);
     }
     if (!json && state.isWeak) {
@@ -39,9 +42,30 @@ export default async function calculateVersions(nodePackagesAndVersions) {
       throw new Error(`Couldn't resolve ${nodeName}@${requestedVersion}`);
     }
     versionsMap.get(nodeName).add(json.version);
+    const uses = evaluateTestPackage ? json.meteorTmp.testUses : json.meteorTmp.uses;
+    if (!uses) {
+      if (evaluateTestPackage) {
+        warn('no uses for', nodeName, 'this usually happens when a package has .onTest but doesn\'t do anything');
+        return [];
+      }
+      throw new Error('no uses for: ' + nodeName);
+    }
     return [
-      ...Object.entries(json.meteorTmp.dependencies).map(([depNodeName, version]) => ({ nodeName: depNodeName, version, newState: state })),
-      ...Object.entries(json.meteorTmp.weakDependencies || {}).map(([depNodeName, version]) => ({ nodeName: depNodeName, version, newState: { ...state, isWeak: true } })),
+      ...uses.map(({ name: depNodeName, constraint, weak, unordered }) => {
+        if (unordered) {
+          return undefined;
+        }
+        return {
+          nodeName: depNodeName,
+          version: constraint && meteorVersionToSemver(constraint),
+          newState: { ...state, isWeak: !!weak },
+        };
+      }).filter(Boolean),
+      ...json.meteorTmp.implies.map(({ name: depNodeName, constraint }) => ({
+        nodeName: depNodeName,
+        version: constraint && meteorVersionToSemver(constraint),
+        newState: state,
+      })),
     ];
   });
 
@@ -60,17 +84,17 @@ export default async function calculateVersions(nodePackagesAndVersions) {
     if (localPackages.has(nodeName)) {
       versionToUse = `file:${localPackages.get(nodeName)}`;
     }
+
     if (versionsSet.size === 1) {
       finalVersions[nodeName] = versionToUse;
       return;
     }
-    const matching = versions.filter((version) => versions.every((versionToSatisfy) => semver.satisfies(version, `^${versionToSatisfy}`)));
+    const matching = versions.filter((version) => versions.every((versionToSatisfy) => versionsAreCompatible(version, versionToSatisfy)));
     if (!matching.length) {
       badVersions.push({ nodeName, versions });
     }
-    matching.sort((versionA, versionB) => -semver.compare(versionA, versionB));
     if (!localPackages.has(nodeName)) {
-      versionToUse = matching[0];
+      versionToUse = matching.slice(-1)[0];
     }
     finalVersions[nodeName] = versionToUse;
   });

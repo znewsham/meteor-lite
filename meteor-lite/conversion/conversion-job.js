@@ -12,9 +12,11 @@ import {
   meteorVersionToSemver,
 } from '../helpers/helpers';
 import { warn, error as logError } from '../helpers/log';
-import MeteorPackage from './meteor-package';
+import MeteorPackage, { TestSuffix } from './meteor-package';
 import { getNpmRc, registryForPackage } from '../helpers/ensure-npm-rc';
+import AsyncLock from 'async-lock';
 import ensureLocalPackage from '../helpers/ensure-local-package';
+import Catalog from './catalog';
 
 export default class ConversionJob {
   #outputGeneralDirectory;
@@ -43,6 +45,17 @@ export default class ConversionJob {
 
   #npmrc;
 
+  #constraintSolver;
+
+  #packageVersionParser;
+
+  #lock = new AsyncLock({ maxPending: Number.MAX_SAFE_INTEGER });
+
+  #testPackages;
+
+  // when converting the initial set of packages, we don't have the packages necessary to perform version checking
+  #checkVersions;
+
   constructor({
     outputGeneralDirectory,
     outputSharedDirectory,
@@ -50,6 +63,7 @@ export default class ConversionJob {
     meteorInstall,
     otherPackageFolders,
     options, // TODO: break this out
+    checkVesions = false,
   }) {
     this.#outputGeneralDirectory = path.resolve(outputGeneralDirectory);
     this.#outputSharedDirectory = path.resolve(outputSharedDirectory || outputGeneralDirectory);
@@ -64,6 +78,7 @@ export default class ConversionJob {
     ].filter(Boolean);
     this.#meteorInstall = meteorInstall;
     this.#options = options;
+    this.#checkVersions = checkVesions;
   }
 
   #outputDirectories() {
@@ -83,9 +98,106 @@ export default class ConversionJob {
     return true;
   }
 
-  async convertPackage(meteorNameAndMaybeVersionConstraint) {
-    const [, maybeVersionConstraint] = meteorNameAndMaybeVersionConstraint.split('@');
-    const meteorPackage = this.warmPackage(meteorNameAndMaybeVersionConstraint);
+  async #createCatalog() {
+    await import('@meteor/modern-browsers');
+    this.#constraintSolver = await import('@meteor/constraint-solver');
+    this.#packageVersionParser = (await import('@meteor/package-version-parser')).default;
+    await this.#populatePackageNameToFolderPaths(
+      this.#allPackageFolders,
+      this.#packageNameToFolderPaths,
+    );
+
+    const localPackageMap = new Map();
+    await Promise.all(Array.from(this.#packageNameToFolderPaths.entries()).map(async ([meteorName, packageJsPathObject]) => {
+      let actualMeteorName = meteorName;
+      let isTest = false;
+      if (meteorName.endsWith(TestSuffix)) {
+        isTest = true;
+        actualMeteorName = meteorName.replace(TestSuffix);
+      }
+      const meteorPackage = new MeteorPackage({
+        meteorName: actualMeteorName,
+        isTest: false,
+        job: this,
+        convertTestPackage: isTest,
+      });
+      try {
+        await meteorPackage.readDependenciesFromPacakgeJS(
+          packageJsPathObject.packageJsPath,
+          packageJsPathObject.type,
+        );
+      }
+      catch (e) {
+        warn(e.message);
+      }
+
+      // TODO: convert to versionRecord?
+      localPackageMap.set(meteorName, {
+        versionRecord: meteorPackage.versionRecord,
+        testVersionRecord: meteorPackage.testVersionRecord,
+      });
+    }));
+
+    const catalog = new Catalog(this.#meteorInstall, localPackageMap);
+    await catalog.init();
+    return catalog;
+  }
+
+  async convertPackages(meteorNames, meteorNamesAndVersions) {
+    let versionResult;
+    if (this.#checkVersions) {
+      const catalog = await this.#createCatalog();
+      const ps = new this.#constraintSolver.ConstraintSolver.PackagesResolver(catalog);
+      versionResult = ps.resolve(
+        meteorNames.map((nv) => nv.split('@')[0]),
+        meteorNamesAndVersions.map((nv) => new this.#packageVersionParser.PackageConstraint(nv)),
+      );
+      // TODO: this is a shitty way of passing in test package names,
+      // I think in the future we can just do a second pass on every package
+      this.#testPackages = new Set(meteorNames
+        .filter((meteorName) => meteorName.endsWith(TestSuffix))
+        .map((meteorName) => meteorName.replace(TestSuffix, '')));
+
+      Object.entries(versionResult.answer).forEach(([meteorName, version]) => {
+        this.warmPackage(`${meteorName}@${version}`);
+      });
+    }
+    else {
+      this.#testPackages = new Set();
+      meteorNames.forEach((meteorName) => this.warmPackage(meteorName));
+    }
+    const cleanNames = meteorNames
+      .map((meteorName) => {
+        const ensuredVersion = versionResult && versionResult.answer[meteorName];
+        const actualMeteorName = meteorName.endsWith(TestSuffix) ? meteorName.replace(TestSuffix, '') : meteorName;
+        if (ensuredVersion) {
+          return `${actualMeteorName}@${ensuredVersion}`;
+        }
+        return actualMeteorName;
+      });
+
+    // a special package that does nothing. Useful for optional imports/exports
+    cleanNames.push('noop@0.0.1');
+
+    // first convert all the non-test packages so we know they're done, then we do all the test packages.
+    // this should help with circular dependencies (a little)
+    await Promise.all(cleanNames.map(async (nameAndMaybeVersion) => this.#convertPackage(nameAndMaybeVersion)));
+    const testNames = cleanNames
+      .filter((meteorNameAndVersion) => this.#testPackages.has(meteorNameAndVersion.split('@')[0]));
+
+    const testPackageDependencies = Array.from(
+      new Set(
+        testNames.flatMap((nameAndVersion) => Object.keys(this.get(nameAndVersion).testVersionRecord.dependencies)),
+      ),
+    );
+    await Promise.all(testPackageDependencies.map((async (meteorNameAndVersion) => this.#convertPackage(meteorNameAndVersion))));
+    await Promise.all(testNames
+      .map(async (meteorNameAndVersion) => this.#convertPackage(meteorNameAndVersion, true)));
+  }
+
+  async #convertPackage(meteorNameAndMaybeVersionConstraint, convertTests = false) {
+    const [meteorName, maybeVersionConstraint] = meteorNameAndMaybeVersionConstraint.split('@');
+    const meteorPackage = this.warmPackage(meteorNameAndMaybeVersionConstraint) || (convertTests && this.#packageMap.get(meteorName));
     if (!meteorPackage) { // the package was already converted
       return false;
     }
@@ -100,7 +212,7 @@ export default class ConversionJob {
       }
     }
     await this.loadPackage(meteorPackage, maybeVersionConstraint);
-    await meteorPackage.writeToNpmModule(this.#outputDirectories());
+    await meteorPackage.writeToNpmModule(this.#outputDirectories(), convertTests);
     return true;
   }
 
@@ -112,25 +224,32 @@ export default class ConversionJob {
     if (this.#packageMap.has(meteorName) && this.#packageMap.get(meteorName).isFullyLoaded) {
       return undefined;
     }
+    const isTest = this.#testPackages.has(meteorName);
     const meteorPackage = new MeteorPackage({
       meteorName,
       versionConstraint: maybeVersionConstraint,
       isTest: false,
       job: this,
+      convertTestPackage: isTest,
     });
     this.#packageMap.set(meteorName, meteorPackage);
     return meteorPackage;
   }
 
   async convertFromExistingIfPossible(meteorPackage, type) {
+    if (this.#forceRefresh(meteorPackage.meteorName)) {
+      return false;
+    }
     // TODO: version control? What if we've moved a package?
     const alreadyConvertedJson = await this.#alreadyConvertedJson(
       meteorPackage.meteorName,
-      meteorPackage.version,
+      meteorPackage.version || meteorPackage.versionConstraint,
       this.#outputDirectories()[type],
     );
     if (alreadyConvertedJson) {
       const isGood = await meteorPackage.loadFromNodeJSON(alreadyConvertedJson);
+      // even though this is already converted, we need to trigger this write to ensure any missing dependencies are written (edge casey)
+      await meteorPackage.writeToNpmModule(this.#outputDirectories(), false);
       return isGood;
     }
     return false;
@@ -168,6 +287,7 @@ export default class ConversionJob {
 
   async #alreadyConvertedPath(meteorName) {
     const packagePath = meteorNameToNodePackageDir(meteorName);
+
 
     // TODO: path mapping
     const actualPath = path.join(this.#outputGeneralDirectory, packagePath, 'package.json');
@@ -227,17 +347,21 @@ export default class ConversionJob {
 
   async #findPackageJs(name, localOnly) {
     const map = localOnly ? this.#localPackageNameToFolderPaths : this.#packageNameToFolderPaths;
-    if (!localOnly && !this.#packageNameToFolderPaths.size) {
-      await this.#populatePackageNameToFolderPaths(
-        this.#allPackageFolders,
-        this.#packageNameToFolderPaths,
-      );
+    if (!localOnly && !map.size) {
+      await this.#lock.acquire('initPackageJsMap', async () => {
+        await this.#populatePackageNameToFolderPaths(
+          this.#allPackageFolders,
+          this.#packageNameToFolderPaths,
+        );
+      });
     }
-    if (localOnly && !this.#localPackageNameToFolderPaths.size) {
-      await this.#populatePackageNameToFolderPaths(
-        [this.#localFolder, this.#sharedFolder].filter(Boolean),
-        this.#localPackageNameToFolderPaths,
-      );
+    if (localOnly && !map.size) {
+      await this.#lock.acquire('initPackageJsMap', async () => {
+        await this.#populatePackageNameToFolderPaths(
+          [this.#localFolder, this.#sharedFolder].filter(Boolean),
+          this.#localPackageNameToFolderPaths,
+        );
+      });
     }
     return map.get(name);
   }
@@ -275,7 +399,6 @@ export default class ConversionJob {
     const packageJsPathObject = await this.#findPackageJs(meteorPackage.meteorName, false);
     if (packageJsPathObject) {
       await meteorPackage.loadFromMeteorPackage(
-        this.#meteorInstall,
         packageJsPathObject.packageJsPath,
         packageJsPathObject.type,
       );
@@ -286,75 +409,63 @@ export default class ConversionJob {
     }
   }
 
+  #forceRefresh(meteorName) {
+    if (!this.#options.forceRefresh) {
+      return false;
+    }
+    if (this.#options.forceRefresh === true) {
+      return true;
+    }
+    if (this.#options.forceRefresh instanceof Set) {
+      return this.#options.forceRefresh.has(meteorName);
+    }
+    return true;
+  }
+
   async ensurePackage(meteorNameAndMaybeVersionConstraint) {
-    let forceUpdate = false;
     const [meteorName, maybeVersionConstraint] = meteorNameAndMaybeVersionConstraint.split('@');
     const versionToSatisfy = maybeVersionConstraint
       ? meteorVersionToSemver(maybeVersionConstraint)
       : undefined;
 
     let meteorPackage = this.#packageMap.get(meteorName);
+    if (!meteorPackage && this.#checkVersions) {
+      throw new Error(`tried to load unresolved package ${meteorName}`);
+    }
+    else if (!meteorPackage) {
+      meteorPackage = this.warmPackage(meteorNameAndMaybeVersionConstraint);
+    }
     if (maybeVersionConstraint && meteorPackage?.isFullyLoaded) {
-      // TODO: this whole block is gnarly - it would be better to somehow get the final list of versions, then load exactly those
       if (!meteorPackage.version) {
         await meteorPackage.loaded();
       }
-      // we really want ^a.b.c - but since meteor doesn't consider minor version changes of 0 major version packages to be breaking, but semver does
-      // we're forced to go with a.x
-      // we need to coerce here to handle .rc-1 etc
-      if (meteorPackage.version && !versionsAreCompatible(meteorPackage.version, versionToSatisfy)) {
-        throw new Error(`invalid package version: ${meteorNameAndMaybeVersionConstraint} requested but ${meteorPackage.version} loaded (${versionToSatisfy})`);
-      }
-      else if (!meteorPackage.version) {
-        logError('missing read version on constrained package', meteorNameAndMaybeVersionConstraint);
-      }
-      if (!meteorPackage.isLocalOrShared() && semver.gt(semver.coerce(maybeVersionConstraint), semver.coerce(meteorPackage.version))) {
-        // this makes things really hard - for example if EJSON reloads and deanius:promise depends on EJSON and has already started converting
-        // we need to pause deanius:promise - so we need to "cancelAndDelete" EJSON, then pause the entire tree from there
-        // the only time this would be necessary would be if something depends on an export that exists in 1.2.4 but not 1.2.3
-        // in this case of direct dependency we should already be fine since this is the point at which that dependency is loaded
-        // so awaiting below is all that is necessary
-        // this.#packageMap.delete(meteorName);
-        forceUpdate = true;
-        warn(
-          'we loaded an older version of package',
-          meteorName,
-          meteorPackage.version,
-          'initially, but we\'re reloading the requested version',
-          maybeVersionConstraint,
-        );
-        await meteorPackage.cancelAndDelete(meteorPackage.outputParentFolder(this.#outputDirectories()));
-        await meteorPackage.rewriteDependants(this.#outputDirectories());
+      if (!versionsAreCompatible(meteorPackage.version, versionToSatisfy)) {
+        throw new Error(`version mismatch for ${meteorName}. ${versionToSatisfy} requested but ${meteorPackage.version} loaded`);
       }
     }
     if (!this.#packageMap.get(meteorName)?.isFullyLoaded) {
-      meteorPackage = this.#packageMap.get(meteorName) || this.warmPackage(meteorNameAndMaybeVersionConstraint);
       meteorPackage.isFullyLoaded = true; // TODO: this probably shouldn't be here, but we need to make sure it happens before any other await
-      if (!this.#options.forceRefresh) {
-        let shouldSkip = !forceUpdate;
+      if (!this.#forceRefresh(meteorName)) {
+        // if the package exists in a "local" dir, we're gonna convert it even if it's already converted
+        const shouldSkip = !await this.#findPackageJs(meteorName, true);
         if (shouldSkip) {
-          // if the package exists in a "local" dir, we're not gonna convert it
-          shouldSkip = !await this.#findPackageJs(meteorName, true);
-        }
-        if (shouldSkip) {
-          const alreadyConvertedJson = await this.#alreadyConvertedJson(meteorName, maybeVersionConstraint);
+          // if we don't want to greedily convert this package, look for an existing JSON (either in an npm registry or locally)
+          // if we find it, and the conversion is good, we're good. Otherwise, continue to load.
+          const alreadyConvertedJson = await this.#alreadyConvertedJson(
+            meteorName,
+            maybeVersionConstraint || meteorPackage.versionConstraint,
+          );
           if (alreadyConvertedJson) {
             const isGood = await meteorPackage.loadFromNodeJSON(alreadyConvertedJson);
             if (isGood) {
+              // even though this is already converted, we need to trigger this write to ensure any missing dependencies are written (edge casey)
+              await meteorPackage.writeToNpmModule(this.#outputDirectories(), false);
               return false;
             }
           }
         }
       }
-      await this.loadPackage(meteorPackage, maybeVersionConstraint);
-      if (versionToSatisfy) {
-        if (
-          semver.gt(semver.coerce(maybeVersionConstraint), semver.coerce(meteorPackage.version))
-          || !versionsAreCompatible(meteorPackage.version, versionToSatisfy)
-        ) {
-          throw new Error(`the loaded version ${meteorPackage.version} of ${meteorName} does not satisfy the constraint ${versionToSatisfy}`);
-        }
-      }
+      await this.loadPackage(meteorPackage, maybeVersionConstraint || meteorPackage.versionConstraint);
       return meteorPackage;
     }
 
@@ -370,6 +481,10 @@ export default class ConversionJob {
   get(meteorNameAndMaybeVersionConstraint) {
     const [name] = meteorNameAndMaybeVersionConstraint.split('@');
     return this.#packageMap.get(name);
+  }
+
+  getAll() {
+    return Array.from(this.#packageMap.values());
   }
 
   getAllLocal() {

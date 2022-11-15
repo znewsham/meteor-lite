@@ -4,66 +4,11 @@ import fs from 'fs/promises';
 import path from 'path';
 import _ from 'underscore';
 import {
-  baseFolder, ensureBuildDirectory, readPackageJson, listFilesInDir,
-} from './command-helpers.js';
-
-// TODO - remove this
-const nodeModulePrefixesToWatch = [
-  '@meteor',
-  '@qualia',
-];
+  baseFolder, ensureBuildDirectory, readPackageJson,
+} from '../../commands/helpers/command-helpers.js';
+import queueForBuild from './queue-plugin.js';
 
 const staticPath = path.join(path.dirname(import.meta.url), '..', '..', 'static').replace('file:', '');
-
-function queueForBuild(buildRoot, queue) {
-  return {
-    name: 'queue-for-build',
-    async setup(build) {
-      // even though we only care about ts/js files - if we don't include all files, imported node modules get rewritten weirdly
-      build.onResolve({ filter: /.*/ }, async ({ kind, path: filePath, resolveDir }) => {
-        const watchFiles = [];
-        const watchDirs = [];
-        const watchingPrefix = nodeModulePrefixesToWatch.find((prefix) => filePath.startsWith(prefix));
-        if (kind === 'entry-point') {
-          return {
-            path: path.resolve(path.join(buildRoot, filePath)),
-            watchFiles,
-            watchDirs,
-          };
-        }
-        if ((!filePath.startsWith('.') && !filePath.startsWith('/')) && !watchingPrefix) {
-          return {
-            external: true,
-            watchFiles,
-            watchDirs,
-          };
-        }
-        if (watchingPrefix) {
-          let resolved = (await build.resolve(`node_modules/${filePath}`, { resolveDir })).path;
-
-          // eslint-disable-next-line
-          while (!await fsExtra.pathExists(resolved) && !resolved.endsWith('/node_modules/')) {
-            resolved = resolved.split('/').slice(0, -1).join('/');
-          }
-          const stats = await fs.lstat(resolved);
-          if (stats.isSymbolicLink()) {
-            watchDirs.push(resolved);
-            const files = await listFilesInDir(resolved);
-            watchFiles.push(...files);
-          }
-        }
-        else {
-          queue.push(path.join(resolveDir.replace(`${buildRoot}/`, ''), filePath));
-        }
-        return {
-          external: true,
-          watchFiles,
-          watchDirs,
-        };
-      });
-    },
-  };
-}
 
 async function buildServer({
   isProduction,
@@ -88,6 +33,7 @@ async function buildServer({
       const files = queue.splice(0, queue.length);
       // eslint-disable-next-line
       const build = await esbuild.build({
+        absWorkingDir: process.cwd(), // it doesn't seem like this shoudl be needed, but because the test-packages commands uses chdir it seems it is
         entryPoints: files,
         outbase: './',
         platform: 'node',

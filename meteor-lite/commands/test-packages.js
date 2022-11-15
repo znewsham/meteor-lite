@@ -1,7 +1,14 @@
 import fs from 'fs-extra';
-import { readPackageJson } from './helpers/command-helpers';
+import path from 'path';
+import { generateGlobals, readPackageJson } from './helpers/command-helpers';
 import { getFinalPackageListForArch } from './helpers/final-package-list';
 import { meteorNameToNodeName } from '../helpers/helpers';
+import convertPackagesToNodeModulesForApp from './convert-packages-for-app';
+import npmInstall from './helpers/npm-install';
+import { TestSuffix } from '../conversion/meteor-package';
+import dependencyEntry from './helpers/dependency-entry';
+import writePeerDependencies from './write-peer-dependencies';
+import tmp from 'tmp';
 
 // it's possible these should just be handled by the existing extraPackages argument.
 const staticImports = [
@@ -13,38 +20,131 @@ const staticImports = [
   'shell-server',
 ];
 
-function dependenciesToString(packages) {
-  return packages.map(({ nodeName, isLazy }) => {
-    if (isLazy) {
-      return `import "${nodeName}/__defineOnly.js";`;
+function dependenciesToString(nodePackagesVersionsAndExports, clientOrServer) {
+  const { map, conditionalMap } = generateGlobals(nodePackagesVersionsAndExports, clientOrServer);
+
+  const importsToWrite = [];
+  const globalsToWrite = [];
+  nodePackagesVersionsAndExports.forEach(({ nodeName, isLazy, onlyLoadIfProd }, i) => {
+    const { importToWrite, globalToWrite } = dependencyEntry({
+      nodeName,
+      isLazy,
+      onlyLoadIfProd,
+      globalsMap: map,
+      conditionalMap,
+      importSuffix: i,
+    });
+    if (importToWrite) {
+      importsToWrite.push(importToWrite);
     }
-    return `import "${nodeName}";`;
-  }).join('\n');
+    if (globalToWrite) {
+      globalsToWrite.push(globalToWrite);
+    }
+  });
+  return [...importsToWrite, ...globalsToWrite].filter(Boolean).join('\n');
 }
 
-export default async function testPackages({ directory, packages, driverPackage, extraPackages = [] }) {
+async function initProjectDirectory() {
+  const directoryObj = { name: '../test-packages' }; /*tmp.dirSync({
+    unsafeCleanup: true,
+  });*/
+  const directory = directoryObj.name;
+  const packageJsonPath = path.join(directory, 'package.json');
+  const mainClientPath = 'client/main.js';
+  const mainServerPath = 'server/main.js';
+  await fs.ensureDir(directory);
+  await Promise.all([
+    fs.ensureDir(path.join(directory, 'client')),
+    fs.ensureDir(path.join(directory, 'server')),
+    fs.ensureDir(path.join(directory, '.meteor')),
+
+    // TODO: we need to build this from an actual npmrc and for more than just meteor.
+    fs.writeFile(path.join(directory, '.npmrc'), 'always-auth = true\nregistry = http://verdaccio:4873/\n@meteor:registry=http://verdaccio:4873/'),
+  ]);
+  // TODO: maybe just write the required packages out here
+  await fs.writeFile(path.join(directory, '.meteor', 'versions'), '');
+  await fs.writeFile(path.join(directory, '.meteor', 'release'), '');
+  await fs.writeFile(path.join(directory, '.meteor', '.id'), '');
+  const packageJson = {
+    name: 'meteor-test-packages',
+    type: 'module',
+    dependencies: {
+      jquery: '3.6.1',
+      fibers: 'file:///home/zacknewsham/Sites/node-fibers', // 'git+https://github.com/qualialabs/node-fibers.git#3229cdda21052a36afdebcd88facfc83a24f24bb',
+      'meteor-node-stubs': '1.2.5',
+    },
+    meteor: {
+      mainModule: {
+        client: mainClientPath,
+        server: mainServerPath,
+      },
+    },
+  };
+  await fs.writeFile(
+    packageJsonPath,
+    JSON.stringify(packageJson, null, 2),
+  );
+  const outputDirectory = path.resolve(path.join(directory, 'npm-packages'));
   process.chdir(directory);
-  const packageJson = await readPackageJson();
+  return { packageJson, outputDirectory };
+}
+
+export default async function buildAppForTestPackages({
+  packages,
+  directories,
+  driverPackage,
+  extraPackages = [],
+  meteorInstall,
+}) {
+  const absoluteMeteorInstall = path.resolve(meteorInstall);
+  const absoluteDirectories = directories.map((dir) => path.resolve(dir));
+  const { packageJson, outputDirectory } = await initProjectDirectory();
   const { client: clientMain, server: serverMain } = packageJson.meteor.mainModule;
 
-  // TODO: remove hardcoded package.json - maybe instead can use require.resolve or similar to just grab the package.json
-  const allPackages = [
+  let allPackages = [
     ...staticImports,
-    ...packages,
+    ...packages.map((meteorName) => `${meteorName}${TestSuffix}`),
     ...extraPackages,
     driverPackage,
   ];
 
+  // we need to use absolute directories because the chdir could be anywhere
+  const job = await convertPackagesToNodeModulesForApp({
+    appPackagesOverride: allPackages,
+    outputDirectory,
+    directories: absoluteDirectories,
+    updateDependencies: false, // we'll handle our own dependencies
+    meteorInstall: absoluteMeteorInstall,
+    forceRefresh: new Set([...packages, ...extraPackages]),
+  });
+  allPackages = allPackages.map((meteorName) => (meteorName.endsWith(TestSuffix) ? meteorName.replace(TestSuffix, '') : meteorName));
+
   const underTestString = packages.map((packageName) => `import "${meteorNameToNodeName(packageName)}/__test.js";`).join('\n');
-  const serverPackages = await getFinalPackageListForArch(allPackages, 'server');
-  const clientPackages = await getFinalPackageListForArch(allPackages, 'client');
+
+  const underTest = new Set(packages);
+  const nodePackagesAndVersions = allPackages.map((meteorName) => {
+    const nodeName = meteorNameToNodeName(meteorName);
+    const { version } = job.get(meteorName);
+    return {
+      nodeName,
+      version,
+      evaluateTestPackage: underTest.has(meteorName),
+    };
+  });
+  await writePeerDependencies({ name: 'meteor-peer-dependencies', nodePackagesAndVersions });
+  await npmInstall();
+
+  const serverPackages = await getFinalPackageListForArch(nodePackagesAndVersions, 'server');
+  const clientPackages = await getFinalPackageListForArch(nodePackagesAndVersions, 'client');
   await fs.writeFile(
     clientMain,
-    `${dependenciesToString(clientPackages)}\n${underTestString}\nrunTests();`,
+    `${dependenciesToString(clientPackages, 'client')}\n${underTestString}\nrunTests();`,
   );
 
   await fs.writeFile(
     serverMain,
-    `${dependenciesToString(serverPackages)}\n${underTestString}`,
+    `${dependenciesToString(serverPackages, 'server')}\n${underTestString}`,
   );
+
+  return job;
 }

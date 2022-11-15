@@ -1,4 +1,68 @@
+import { meteorVersionToSemver } from '../../helpers/helpers';
 import recurseMeteorNodePackages from './recurse-meteor-node-packages';
+
+// this was an attempt to get the load order correct, but it failed misserably.
+// the load order of weak + strong dependencies is very strange, e.g.,:
+/*
+  ecmascript-runtime
+  ...
+  modern-browsers
+  es5-shim
+  promise
+  ecmascript-runtime-client
+*/
+function populateReturnList2(nodeNames, ret, loaded, written) {
+  if (!nodeNames.length) {
+    return;
+  }
+  const allPreDeps = new Set();
+  const allPostDeps = new Set();
+  const weakDeps = new Set();
+  const toPush = [];
+  nodeNames.forEach((nodeName) => {
+    if (written.has(nodeName)) {
+      return;
+    }
+    written.add(nodeName);
+    const deps = loaded.get(nodeName);
+    if (deps.uses) {
+      deps.uses.forEach(({ name: depNodeName, weak, unordered }) => {
+        if (weak) {
+          weakDeps.add(depNodeName);
+        }
+        if (unordered) {
+          allPostDeps.add(depNodeName);
+        }
+        else {
+          allPreDeps.add(depNodeName);
+        }
+      });
+    }
+    else {
+      deps.strong.forEach((depNodeName) => {
+        allPreDeps.add(depNodeName);
+      });
+      deps.preload.forEach((depNodeName) => {
+        allPreDeps.add(depNodeName);
+        weakDeps.add(depNodeName);
+      });
+      deps.unordered.forEach((depNodeName) => {
+        allPostDeps.add(depNodeName);
+      });
+    }
+    toPush.push({
+      nodeName,
+      isLazy: deps.isLazy,
+      onlyLoadIfProd: deps.isProdOnlyImplied,
+      json: deps.json,
+    });
+  });
+  const depsToPreLoad = Array.from(allPreDeps).filter((depNodeName) => !written.has(depNodeName) && (!weakDeps.has(depNodeName) || loaded.has(depNodeName)));
+  const depsToPostLoad = Array.from(allPostDeps).filter((depNodeName) => !written.has(depNodeName));
+  populateReturnList2(depsToPreLoad, ret, loaded, written);
+  ret.push(...toPush);
+  populateReturnList2(depsToPostLoad, ret, loaded, written);
+}
 
 function populateReturnList(nodeName, ret, loaded, written, chain = []) {
   if (written.has(nodeName)) {
@@ -9,11 +73,50 @@ function populateReturnList(nodeName, ret, loaded, written, chain = []) {
   if (!deps) {
     return; // this better be because it's a node module...
   }
-  deps.strong.forEach((depNodeName) => {
-    populateReturnList(depNodeName, ret, loaded, written, [...chain, nodeName]);
-  });
-  deps.preload.forEach((depNodeName) => {
-    if (loaded.has(depNodeName)) {
+  // TODO: the order here is still wrong - but the code is marginally cleaner.
+  // if we care about the *exact* order, we need to fetch "all the dependencies of preload and strong in order"
+  // then output all the dependencies first, then strong/preload in order.
+  // this is still recursive, but the recursion happens at the "package" layer rather than "per dependency"
+  // we want to see:
+  /*
+    ecmascript-runtime
+    ...
+    modern-browsers
+    es5-shim
+    promise
+    ecmascript-runtime-client
+  */
+  let strongAndPreload;
+  let preloads;
+  let unorderedDeps;
+  if (deps.uses) {
+    strongAndPreload = new Set();
+    unorderedDeps = new Set();
+    preloads = new Set();
+    deps.uses.forEach(({ name: depNodeName, weak, unordered }) => {
+      if (weak) {
+        preloads.add(depNodeName);
+      }
+      if (unordered) {
+        unorderedDeps.add(depNodeName);
+      }
+      else {
+        strongAndPreload.add(depNodeName);
+      }
+    });
+  }
+  else {
+    strongAndPreload = new Set([
+      ...deps.strong,
+      ...deps.preload,
+    ]);
+    preloads = new Set(deps.preload);
+    unorderedDeps = new Set(deps.unordered);
+  }
+
+  strongAndPreload.forEach((depNodeName) => {
+    const preload = preloads.has(depNodeName);
+    if (!preload || loaded.has(depNodeName)) {
       populateReturnList(depNodeName, ret, loaded, written, [...chain, nodeName]);
     }
   });
@@ -23,12 +126,12 @@ function populateReturnList(nodeName, ret, loaded, written, chain = []) {
     onlyLoadIfProd: deps.isProdOnlyImplied,
     json: deps.json,
   });
-  deps.unordered.forEach((depNodeName) => {
+  unorderedDeps.forEach((depNodeName) => {
     populateReturnList(depNodeName, ret, loaded, written, [...chain, nodeName]);
   });
 }
 
-function populateDependencies2({
+function populateDependencies({
   nodeName,
   json,
   state,
@@ -51,6 +154,7 @@ function populateDependencies2({
   const isProdOnly = !!json.exports?.['.']?.production;
   const isProdOnlyImplied = chainIsProdOnly;
   dependenciesMap.set(nodeName, {
+    uses: json.meteorTmp.uses,
     strong: Object.keys(json.meteorTmp.dependencies || {}),
     preload: json.meteorTmp.preload?.[archName] || [],
     unordered: json.meteorTmp.unordered?.[archName] || [],
@@ -61,25 +165,39 @@ function populateDependencies2({
     // butwe may need to hoist the packages dependencies (and still create globals)
     isProdOnlyImplied,
   });
-  const ret = [
-    ...Object.entries(json.meteorTmp.dependencies).map(([depNodeName, version]) => ({
-      nodeName: depNodeName,
-      version,
-      newState: { ...state, chainIsProdOnly: chainIsProdOnly || isProdOnly },
-    })),
-    ...Object.values(json.meteorTmp.unordered?.[archName] || {}).map((depNodeName) => ({
-      nodeName: depNodeName,
-      version: json.peerDependencies[depNodeName],
-      newState: { ...state, chainIsProdOnly: chainIsProdOnly || isProdOnly },
-    })),
+  return [
+    ...json.meteorTmp.uses.map(({ name: depNodeName, constraint, weak, archs }) => {
+      if (weak) {
+        return undefined;
+      }
+      if (archs && !archs.includes(archName)) {
+        return undefined;
+      }
+      return {
+        nodeName: depNodeName,
+        version: constraint && meteorVersionToSemver(constraint),
+        newState: { ...state, chainIsProdOnly: chainIsProdOnly || isProdOnly },
+      };
+    }).filter(Boolean),
+    ...(json.meteorTmp.implies?.filter(({ archs }) => !archs || archs.includes(archName)) || []).map(({ name: depNodeName, constraint, weak, archs }) => {
+      if (weak) {
+        return undefined;
+      }
+      if (archs && !archs.includes(archName)) {
+        return undefined;
+      }
+      return {
+        nodeName: depNodeName,
+        version: constraint && meteorVersionToSemver(constraint),
+        newState: { ...state, chainIsProdOnly: chainIsProdOnly || isProdOnly },
+      };
+    }).filter(Boolean),
   ];
-  return ret;
 }
 
 export async function getFinalPackageListForArch(nodePackagesAndVersions, archName) {
   const loaded = new Map();
   const written = new Set();
-
   await recurseMeteorNodePackages(
     nodePackagesAndVersions,
     ({
@@ -89,7 +207,7 @@ export async function getFinalPackageListForArch(nodePackagesAndVersions, archNa
       loadedChain,
       state,
       pathToLocal,
-    }) => populateDependencies2({
+    }) => populateDependencies({
       nodeName,
       requestedVersion,
       json,

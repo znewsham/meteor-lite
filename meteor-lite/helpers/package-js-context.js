@@ -3,13 +3,11 @@ import { getCorePackageVersion } from './ensure-local-package';
 
 const aRequire = module.createRequire(import.meta.url);
 
-async function callbackWrapper(meteorPackage, meteorInstall, cb, isTest = false) {
+async function callbackWrapper(meteorPackage, cb, isTest = false) {
   const useCalls = [];
   const implyCalls = [];
-  let meteorVersion;
   cb({
-    versionsFrom(version) {
-      meteorVersion = Array.isArray(version) ? version.join(' || ') : version;
+    versionsFrom() {
     },
     export(symbol, archOrArchs, maybeOpts) {
       if (isTest) {
@@ -78,7 +76,7 @@ async function callbackWrapper(meteorPackage, meteorInstall, cb, isTest = false)
     },
   });
 
-  if (meteorVersion) {
+  /*if (meteorVersion) {
     await Promise.all([...useCalls, ...implyCalls].map(async (useOrImplyCall) => {
       useOrImplyCall.packages = await Promise.all(useOrImplyCall.packages.map(async (packageAndMaybeVersion) => {
         if (packageAndMaybeVersion.includes('@')) {
@@ -91,7 +89,7 @@ async function callbackWrapper(meteorPackage, meteorInstall, cb, isTest = false)
         return `${packageAndMaybeVersion}@${version}`;
       }));
     }));
-  }
+  }*/
   useCalls.forEach(({ packages, archs, opts }) => {
     meteorPackage.addMeteorDependencies(packages, archs, opts);
   });
@@ -99,7 +97,7 @@ async function callbackWrapper(meteorPackage, meteorInstall, cb, isTest = false)
     meteorPackage.addImplies(packages, archs);
   });
 }
-export default function packageJsContext(meteorPackage, meteorInstall) {
+export default function packageJsContext(meteorPackage) {
   const ret = {
     process: globalThis.process,
     global: globalThis,
@@ -135,11 +133,15 @@ export default function packageJsContext(meteorPackage, meteorInstall) {
       registerBuildPlugin() {
         // noop
       },
+
+      // because packages like qualia:docs and qultra:lucky-tests use functions like autoLoad (which are declared after package.onUse)
+      // we need to ensure the entire file has parsed, before we actually call the callbacks here.
+      // Presumably this works in meteor due to fiber magic
       onTest(cb) {
-        ret.onTestPromise = callbackWrapper(meteorPackage, meteorInstall, cb, true);
+        ret.onTestPromise = Promise.resolve().then(() => callbackWrapper(meteorPackage, cb, true));
       },
       onUse(cb) {
-        ret.onUsePromise = callbackWrapper(meteorPackage, meteorInstall, cb, false);
+        ret.onUsePromise = Promise.resolve().then(() => callbackWrapper(meteorPackage, cb, false));
       },
     },
   };

@@ -114,7 +114,6 @@ const commonJSBlacklist = new Set([
 ]);
 
 const globalBlacklist = new Set([
-  'runTests', // meteor expects test drivers to expose a global `runTests`
   'revalify',
   'window',
   'document',

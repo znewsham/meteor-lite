@@ -7,7 +7,7 @@ import generateWebBrowser from './commands/generate-web-browser.js';
 import generateServer from './commands/generate-server.js';
 import convertPackagesForApp from './commands/convert-packages-for-app.js';
 import convertPackage from './commands/convert-package.js';
-import testPackages from './commands/test-packages.js';
+import buildAppForTestPackages from './commands/test-packages.js';
 import run from './commands/dev-run.js';
 import generateMain from './commands/build-main.js';
 import prodBuild from './commands/prod-build.js';
@@ -152,17 +152,28 @@ program
 
 program
   .command('test-packages')
+  .option('-m, --meteor <meteorInstall>', 'path to the meteor install')
   .requiredOption('-p, --packages <package...>', 'the packages to test')
-  .requiredOption('-d, --directory <directory>', 'the directory to run the tests in - should have installed all the dependencies already')
-  .option('-d, --extra-packages <extraPackages...>', 'any extra packages to load')
   .requiredOption('--driver-package <driverPackage>', 'the test driver to use')
+  .option('-d, --directories <directories...>', 'the prioritized list of additional directories to search for packages')
+  .option('--extra-packages <extraPackages...>', 'any extra packages to load')
   .action(async ({
-    directory, packages, driverPackage, extraPackages,
+    directories, packages, driverPackage, extraPackages, meteor,
   }) => {
-    await testPackages({
-      directory, packages, driverPackage, extraPackages,
+    const job = await buildAppForTestPackages({
+      directories,
+      packages,
+      driverPackage,
+      extraPackages,
+      meteorInstall: meteor || `${os.homedir()}/.meteor`,
+
     });
-    await run(DefaultArchs);
+    const testMetadata = {
+      driverPackage,
+      isAppTest: false,
+      isTest: true,
+    };
+    await run(DefaultArchs, { job, buildAndWatchPackages: true, watchAll: true, testMetadata });
   });
 
 program

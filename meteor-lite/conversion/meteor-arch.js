@@ -10,7 +10,7 @@ export default class MeteorArch {
 
   #exports = [];
 
-  #imports = new Set();
+  #imports = new Map();
 
   #impliedPackages = new Set();
 
@@ -42,8 +42,8 @@ export default class MeteorArch {
     this.#modified = true;
   }
 
-  addImport(item) {
-    this.#imports.add(item);
+  addImport(item, importOrder) {
+    this.#imports.set(item, importOrder);
     this.#modified = true;
   }
 
@@ -58,7 +58,6 @@ export default class MeteorArch {
   }
 
   addImpliedPackage(nodeName) {
-    this.#imports.add(nodeName);
     this.#impliedPackages.add(nodeName);
     this.#modified = true;
   }
@@ -75,18 +74,31 @@ export default class MeteorArch {
     return new Set([...this.#parentArch?.getPreloadPackages() || [], ...this.#preloadPackages]);
   }
 
-  getUnorderedPackages(justOwn = false) {
+  // unordered are both { unordered: true } and implied packages,
+  // in that we're going to load an implied package, after we've loaded ourselves
+  getUnorderedOrImpliedPackages(justOwn = false) {
     if (justOwn) {
-      return this.#unorderedPackages;
+      return new Set([...this.#unorderedPackages, ...this.#impliedPackages]);
     }
-    return new Set([...this.#parentArch?.getUnorderedPackages() || [], ...this.#unorderedPackages]);
+    return new Set([...this.#parentArch?.getUnorderedOrImpliedPackages() || [], ...this.#unorderedPackages, ...this.#impliedPackages]);
+  }
+
+  #getImportsEntries() {
+    return [
+      ...Array.from(this.#imports.entries()),
+      ...(this.#parentArch ? Array.from(this.#parentArch.#getImportsEntries()) : []),
+    ];
   }
 
   getImports(justOwn = false) {
     if (justOwn) {
-      return this.#imports;
+      return new Set(this.#imports.keys());
     }
-    return new Set([...this.#parentArch?.getImports() || [], ...this.#imports]);
+    const all = this.#getImportsEntries();
+
+    all.sort((a, b) => a[1] - b[1]);
+
+    return new Set(all.map(([imp]) => imp));
   }
 
   getMainModule(justOwn = false) {

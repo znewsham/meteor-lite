@@ -4,7 +4,7 @@ demo-app/packages/*
 demo-app/.meteor
 demo-app/meteor/@meteor
 meteor-lite/meteor/@meteor
-meteor-lite/packages/*
+meteor-lite/npm-packages/*
 meteor-lite/node_modules
 todo
 

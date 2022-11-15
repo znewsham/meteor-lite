@@ -31,8 +31,11 @@ export const ExcludePackageNames = new Set([
   'meteor-tool',
   'ddp-client-isopacket',
   'isobuild:linter-plugin',
-
+  'isobuild:isopack-2',
+  'reload-safetybelt', // not "really" required - but it doesn't play nice with client side modules (it expects the file to finish sync)
+  'stylus',
   // these are just helpers so we can pass in the packages directory for conversion
   'deprecated',
   'non-core',
+
 ]);

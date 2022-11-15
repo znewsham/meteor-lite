@@ -3,7 +3,7 @@ import fs from 'fs-extra';
 import sqlite3 from 'sqlite3';
 import fetch from 'node-fetch';
 import targz from 'targz';
-import semver from 'semver';
+import AsyncLock from 'async-lock';
 import rimraf from 'rimraf';
 import Util from 'util';
 import { meteorNameToLegacyPackageDir, sortSemver, versionsAreCompatible } from './helpers';
@@ -137,57 +137,105 @@ export async function getCorePackageVersion({
   return requestedContent.packages[name];
 }
 
+export async function getPackageDependencies({
+  name,
+  version,
+  meteorInstall,
+}) {
+  try {
+    const db = getPackageDb(meteorInstall);
+    const packageVersion = await getOne(db, `SELECT * from versions WHERE packageName="${name}" AND version="${version}"`);
+    if (!packageVersion) {
+      // happens with iron-router, which doesn't exist and less, which should
+      return [];
+    }
+    const dependencies = Object.entries(JSON.parse(packageVersion.content).dependencies);
+    return dependencies.map(([depName, opts]) => ({
+      name: depName,
+      weak: opts.references.every(({ weak }) => weak),
+      ...opts,
+    }));
+  }
+  catch (e) {
+    e.message = `problem with ${name}: ${e.message}`;
+    throw e;
+  }
+}
+
+export async function getAllPackageVersions({
+  meteorInstall,
+}) {
+  const db = getPackageDb(meteorInstall);
+  const packageVersions = await getAll(db, `SELECT * from versions`);
+  return packageVersions;
+}
+
+export async function getPackageVersions({
+  name,
+  meteorInstall,
+}) {
+  const db = getPackageDb(meteorInstall);
+  const packageVersions = await getAll(db, `SELECT * from versions WHERE packageName="${name}"`);
+  return packageVersions.map(({ version }) => version);
+}
+
+const asyncLock = new AsyncLock();
+
 export default async function ensureLocalPackage({
   name,
   version,
   versionConstraint,
   meteorInstall,
 }) {
-  if (versionConstraint && version) {
-    throw new Error('you can\'t specify both version and versionConstraint');
-  }
-
-  const cleanName = meteorNameToLegacyPackageDir(name);
-  const db = getPackageDb(meteorInstall);
-
-  let versionToUse = version;
-  let allVersions;
-  if (!version) {
-    allVersions = (await getAll(db, `SELECT * FROM versions WHERE packageName="${name}"`)).map(({ version: aVersion }) => aVersion);
-    allVersions = sortSemver(allVersions);
-  }
-  if (versionConstraint) {
-    const versions = allVersions.filter((aVersion) => versionsAreCompatible(aVersion, versionConstraint));
-    if (!versions.length) {
-      throw new Error(`no version in ${allVersions} satisfies ${versionConstraint}`);
+  return asyncLock.acquire(name, async () => {
+    if (versionConstraint && version) {
+      throw new Error('you can\'t specify both version and versionConstraint');
     }
-    versionToUse = versions.slice(-1)[0];
-  }
-  if (!versionToUse) {
-    // TODO: this is probably wrong since we're sorting a string - but it also shouldn't be required any more. Maybe we should just throw an error
-    versionToUse = allVersions.slice(-1)[0];
+
+    const cleanName = meteorNameToLegacyPackageDir(name);
+    const db = getPackageDb(meteorInstall);
+
+    let versionToUse = version;
+    let allVersions;
+    if (!version) {
+      allVersions = (await getAll(db, `SELECT * FROM versions WHERE packageName="${name}"`)).map(({ version: aVersion }) => aVersion);
+      allVersions = sortSemver(allVersions);
+    }
+    if (versionConstraint) {
+      const versions = allVersions.filter((aVersion) => versionsAreCompatible(aVersion, versionConstraint));
+      if (!versions.length) {
+        throw new Error(`no version in ${allVersions} satisfies ${versionConstraint} for ${name}`);
+      }
+      versionToUse = versions.slice(-1)[0];
+    }
     if (!versionToUse) {
+      // TODO: this is probably wrong since we're sorting a string - but it also shouldn't be required any more. Maybe we should just throw an error
+      versionToUse = allVersions.slice(-1)[0];
+      if (!versionToUse) {
+        throw new Error(`Package: ${name} does not exist`);
+      }
+    }
+    const pathToPackage = path.join(meteorInstall, 'packages', cleanName, versionToUse);
+    if (await fs.pathExists(pathToPackage)) {
+      return versionToUse;
+    }
+    const availablePackageVersion = await getOne(db, `SELECT * from versions WHERE packageName="${name}" AND version="${versionToUse}"`);
+    if (!availablePackageVersion) {
       throw new Error(`Package: ${name} does not exist`);
     }
-  }
-  const pathToPackage = path.join(meteorInstall, 'packages', cleanName, versionToUse);
-  if (await fs.pathExists(pathToPackage)) {
-    return;
-  }
-  const availablePackageVersion = await getOne(db, `SELECT * from versions WHERE packageName="${name}" AND version="${versionToUse}"`);
-  if (!availablePackageVersion) {
-    throw new Error(`Package: ${name} does not exist`);
-  }
-  const packageVersionBuilds = await getAll(db, `SELECT * from builds WHERE versionId="${availablePackageVersion._id}"`);
-  if (packageVersionBuilds.length !== 1) {
-    throw new Error(`Invalid number of builds: ${packageVersionBuilds}`);
-  }
-  const [packageVersionBuild] = packageVersionBuilds;
-  await installPackage(
-    JSON.parse(availablePackageVersion.content),
-    JSON.parse(packageVersionBuild.content),
-    meteorInstall,
-  );
+    const packageVersionBuilds = await getAll(db, `SELECT * from builds WHERE versionId="${availablePackageVersion._id}"`);
+    if (packageVersionBuilds.length !== 1) {
+      throw new Error(`Invalid number of builds: ${packageVersionBuilds}`);
+    }
+    const [packageVersionBuild] = packageVersionBuilds;
+    await installPackage(
+      JSON.parse(availablePackageVersion.content),
+      JSON.parse(packageVersionBuild.content),
+      meteorInstall,
+    );
+
+    return versionToUse;
+  });
 }
 
 // getCorePackageVersion({ meteorInstall: '/home/vagrant/share/meteor/.meteor/', meteorVersion: '1.10' }).then(console.log)

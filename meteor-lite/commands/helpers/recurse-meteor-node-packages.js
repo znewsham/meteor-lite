@@ -3,7 +3,6 @@ import path from 'path';
 import pacote from 'pacote';
 import { meteorNameToNodePackageDir, nodeNameToMeteorName } from '../../helpers/helpers';
 import { getNpmRc, registryForPackage } from '../../helpers/ensure-npm-rc';
-import { warn } from '../../helpers/log';
 
 export default async function recurseMeteorNodePackages(
   startingList,
@@ -17,7 +16,13 @@ export default async function recurseMeteorNodePackages(
   const npmRc = await getNpmRc();
   while (nextPackages.length) {
     // eslint-disable-next-line
-    nextPackages = (await Promise.all(nextPackages.map(async ({ nodeName, version, newState, loadedChain = [] }) => {
+    nextPackages = (await Promise.all(nextPackages.map(async ({
+      nodeName,
+      version,
+      newState,
+      loadedChain = [],
+      evaluateTestPackage = false,
+    }) => {
       const options = {
         fullReadJson: true,
         fullMetadata: true,
@@ -27,14 +32,13 @@ export default async function recurseMeteorNodePackages(
       if (registry) {
         options.registry = registry;
       }
-      const packageSpec = version ? `${nodeName}@^${version}` : nodeName;
+      const packageSpec = version ? `${nodeName}@${version}` : nodeName;
       const has = packageJsonMap.has(packageSpec);
       let json = packageJsonMap.get(packageSpec);
       let pathToLocal;
 
       // use has since we set to undefined below
       if (!has) {
-        // TODO: pull from local directories
         if (localDirs?.length) {
           const localFolderName = meteorNameToNodePackageDir(nodeNameToMeteorName(nodeName));
           const results = (await Promise.all(localDirs.map(async (localDir) => {
@@ -61,7 +65,8 @@ export default async function recurseMeteorNodePackages(
             json = packageJsonMap.get(packageSpec);
             if (!json) {
               // so we don't warn on a race condition
-              warn(`Couldn't load ${newState?.isWeak ? 'weak ' : ''}package: ${packageSpec} because ${e.message} loaded by ${loadedChain}`);
+              // NOTE: this is really noisy and not super useful
+              // warn(`Couldn't load ${newState?.isWeak ? 'weak ' : ''}package: ${packageSpec} because ${e.message} loaded by ${loadedChain}`);
               if (!newState?.isWeak) {
                 throw e;
               }
@@ -83,6 +88,7 @@ export default async function recurseMeteorNodePackages(
         loadedChain,
         state: { ...initialState, ...newState },
         pathToLocal: pathToLocal && path.dirname(pathToLocal),
+        evaluateTestPackage,
       })) || [];
       if (!has) {
         return ret.map((item) => ({ loadedChain: [...loadedChain, packageSpec], ...item }));

@@ -1,225 +1,23 @@
 import esbuild from 'esbuild';
 import fs from 'fs/promises';
 import fsExtra from 'fs-extra';
-import less from 'less';
 import path from 'path';
-import crypto from 'crypto';
 
 import {
   listFilesInDir, generateProgram, ensureBuildDirectory, readPackageJson,
-} from './command-helpers.js';
+} from '../../commands/helpers/command-helpers.js';
 import { meteorNameToLegacyPackageDir, nodeNameToMeteorName } from '../../helpers/helpers.js';
 import { ParentArchs } from '../../constants.js';
+import blazePlugin from './blaze-plugin.js';
+import lessPlugin from './less-plugin.js';
+import stubsPlugin from './stubs-plugin.js';
+import onStart from './start-plugin.js';
+import onEnd from './end-plugin.js';
 
-function getFileCacheKey(filePath) {
-  return crypto.createHash('sha256').update(filePath).digest('base64').split('/').join('');
-}
-
-async function getCacheEntry(cacheDirectory, filePath, mtimeMs) {
-  const fileName = getFileCacheKey(filePath);
-  const finalPath = path.join(cacheDirectory, fileName);
-  if (await fsExtra.pathExists(finalPath)) {
-    const stats = await fsExtra.stat(finalPath);
-    if (stats.mtimeMs > mtimeMs) {
-      // the cache entry is newer than modification date on the file
-      const res = (await fsExtra.readFile(finalPath)).toString();
-      return res;
-    }
-  }
-  return undefined;
-}
-
-async function setCacheEntry(cacheDirectory, filePath, contents) {
-  const fileName = getFileCacheKey(filePath);
-  const finalPath = path.join(cacheDirectory, fileName);
-  await fsExtra.writeFile(finalPath, contents);
-}
-
-let guessStarted = null;
 const cacheMap = new Map();
-function lessPlugin(cacheDirectory) {
-  return {
-    name: 'less',
-    async setup(build) {
-      build.onLoad(
-        { filter: /.(less|lessimport)$/ },
-        async ({ path: filePath }) => {
-          if (!guessStarted) {
-            guessStarted = new Date().getTime();
-          }
-          const stat = await fs.stat(filePath);
-          const cacheKey = stat.mtime.toString();
-          const cached = cacheMap.get(filePath);
-          if (cached && cached.cacheKey === cacheKey) {
-            return cached.result;
-          }
-          if (cached) {
-            cached.invalidates.forEach((invalidated) => cacheMap.delete(invalidated));
-          }
-          if (filePath.endsWith('.import.less')) {
-            const res = {
-              contents: '',
-              loader: 'css',
-            };
-            cacheMap.set(filePath, { result: res, cacheKey, invalidates: new Set() });
-            return res;
-          }
-          if (cacheDirectory) {
-            const cacheContents = await getCacheEntry(cacheDirectory, filePath, stat.mtimeMs);
-            if (cacheContents) {
-              const res = {
-                contents: cacheContents,
-                loader: 'css',
-              };
-              cacheMap.set({
-                result: res,
-                cacheKey,
-                invalidates: new Set(),
-              });
-              return res;
-            }
-          }
-          const result = await less.render((await fs.readFile(filePath)).toString('utf8'), {
-            filename: filePath,
-            plugins: [/* importPlugin */],
-            javascriptEnabled: true,
-            sourceMap: { outputSourceFiles: true },
-          });
-
-          if (cacheDirectory) {
-            setCacheEntry(cacheDirectory, filePath, result.css);
-          }
-
-          const res = {
-            contents: result.css,
-            loader: 'css',
-          };
-
-          cacheMap.set(filePath, {
-            result: res,
-            cacheKey,
-            invalidates: new Set(),
-          });
-          result.imports.forEach((imp) => {
-            cacheMap.get(imp).invalidates.add(filePath);
-          });
-
-          return res;
-        },
-      );
-    },
-  };
-}
-
-function blazePlugin(cacheDirectory) {
-  return {
-    name: 'blaze',
-    async setup(build) {
-      // HACK: required because templating-tools imports ecma-runtime-client (somewhere)
-      // and that's a CJS module that imports the ESM module modern-browsers
-      // and the CJS entry point for an ESM module just re-exports Package[name]
-      // we need to import the CJS module first.
-      // this isn't "required" in an app because the generation of dependencies.js handles this
-      await import('@meteor/modern-browsers');
-      const { TemplatingTools } = await import('@meteor/templating-tools');
-      build.onLoad(
-        { filter: /\.html$/ },
-        async ({ path: filePath }) => {
-          if (!guessStarted) {
-            guessStarted = new Date().getTime();
-          }
-          const start = new Date().getTime();
-          const stat = await fs.stat(filePath);
-          const cacheKey = stat.mtime.toString();
-          if (cacheMap.has(filePath)) {
-            const cached = cacheMap.get(filePath);
-            if (cached.cacheKey === cacheKey) {
-              return cached.result;
-            }
-          }
-
-          if (cacheDirectory) {
-            const cacheContents = await getCacheEntry(cacheDirectory, filePath, stat.mtimeMs);
-            if (cacheContents) {
-              const res = {
-                contents: cacheContents,
-                loader: 'js',
-              };
-              cacheMap.set({
-                result: res,
-                cacheKey,
-              });
-              return res;
-            }
-          }
-          const contents = (await fs.readFile(filePath)).toString();
-          const tags = TemplatingTools.scanHtmlForTags({
-            sourceName: filePath,
-            contents,
-            tagNames: ['body', 'head', 'template'],
-          });
-          const result = TemplatingTools.compileTagsWithSpacebars(tags);
-          // most app html files don't need this (and can't use it anyway) but package globals aren't global anymore, so we need to import them
-          // this happens as part of the conversion for JS, but HTML is compiled OTF.
-          // TODO: move this to a static file
-          const needsImport = true; // filePath.includes('/node_modules/') || filePath.includes('/npm-packages/') || filePath.includes('/packages/'); // hack for symlinks
-          const importStr = [
-            filePath.includes('templating-runtime')
-              ? 'import globals from "./__globals.js"; const { Template } = globals'
-              : 'import { Template } from "@meteor/templating-runtime"',
-            'import { HTML } from "@meteor/htmljs";',
-            'import { Blaze } from "@meteor/blaze";',
-            'import { Spacebars } from "@meteor/spacebars";',
-          ].join('\n');
-          const res = {
-            contents: `${needsImport ? importStr : ''}${result.js}`,
-            loader: 'js',
-          };
-
-          if (cacheDirectory) {
-            setCacheEntry(cacheDirectory, filePath, res.contents);
-          }
-
-          cacheMap.set(filePath, { result: res, cacheKey });
-          return res;
-        },
-      );
-    },
-  };
-}
 
 // can't actually be weak since `build` is new each time.
 const weakMap = new Map();
-function onStart(onStartHandler) {
-  return {
-    name: 'on-start',
-    setup(build) {
-      build.onStart((...args) => {
-        const arch = build.initialOptions.conditions.slice(-1)[0];
-        console.log('build started', arch, build.initialOptions.entryPoints);
-        weakMap.set(arch, new Date());
-        if (onStartHandler) {
-          onStartHandler(build, ...args);
-        }
-      });
-    },
-  };
-}
-function onEnd(onEndHandler) {
-  return {
-    name: 'on-end',
-    setup(build) {
-      build.onEnd((...args) => {
-        const arch = build.initialOptions.conditions.slice(-1)[0];
-        const start = weakMap.get(arch);
-        console.log('build ended', arch, build.initialOptions.entryPoints, (new Date().getTime() - start.getTime()) / 1000);
-        if (onEndHandler) {
-          onEndHandler(build, ...args);
-        }
-      });
-    },
-  };
-}
 
 async function buildClient({
   archName,
@@ -231,11 +29,13 @@ async function buildClient({
   const entryPoint = packageJson.meteor.mainModule[archName] || packageJson.meteor.mainModule.client;
   const outdir = `${outputBuildFolder}/${archName}`;
   let isInitial = true;
+  const buildRoot = path.resolve('./');
   const cacheDirectory = path.resolve(path.join(outputBuildFolder, 'cache'));
   await fsExtra.ensureDir(cacheDirectory);
   const wasPaused = new Map();
   // eslint-disable-next-line
   const build = await esbuild.build({
+    absWorkingDir: process.cwd(), // it doesn't seem like this shoudl be needed, but because the test-packages commands uses chdir it seems it is
     minify: isProduction,
     entryPoints: [entryPoint],
     outdir,
@@ -246,8 +46,6 @@ async function buildClient({
       '*.svg',
       '/fonts/*',
       '/packages/*', // for things like qualia_semantic that hardcode the URL
-      // TODO: these should be passed in
-      'util',
     ],
     sourcemap: 'linked',
     logLevel: 'error',
@@ -255,11 +53,14 @@ async function buildClient({
       'Meteor.isServer': 'false',
       'Meteor.isClient': 'true',
       'Meteor.isModern': archName === 'web.browser' ? 'true' : 'false',
+      global: 'globalThis', // hack mostly for util (or any other npm dependency of a meteor package that looks for global)
       '__package_globals.require': 'require',
     },
     plugins: [
-      blazePlugin(cacheDirectory),
-      lessPlugin(cacheDirectory),
+      // TODO: swap to holistic cache implementation
+      blazePlugin(cacheDirectory, cacheMap),
+      lessPlugin(cacheDirectory, cacheMap),
+      stubsPlugin(buildRoot),
       onStart(async () => {
         if (isInitial) {
           return;
@@ -267,7 +68,7 @@ async function buildClient({
         if (appProcess) {
           wasPaused.set(archName, await appProcess.pauseClient(archName));
         }
-      }),
+      }, weakMap),
       onEnd(async (build, result) => {
         if (isInitial) {
           return;
@@ -288,7 +89,7 @@ async function buildClient({
         if (appProcess && wasPaused.get(archName)) {
           appProcess.refreshClient(archName);
         }
-      }),
+      }, weakMap),
     ],
     splitting: archName === 'web.browser',
     bundle: true,

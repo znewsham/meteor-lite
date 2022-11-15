@@ -1,5 +1,5 @@
 import { baseBuildFolder } from './helpers/command-helpers';
-import _generateServer from './helpers/generate-server';
+import _generateServer from '../build-run/server/generate-server';
 
 export default async function generateServer(
   archs,

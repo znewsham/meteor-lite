@@ -1,6 +1,6 @@
 import path from 'path';
-import generateServer from './helpers/generate-server';
-import generateWebBrowser from './helpers/generate-web-browser';
+import generateServer from '../build-run/server/generate-server';
+import generateWebBrowser from '../build-run/client/generate-web-browser';
 
 export default async function prodBuild({ directory, archs }) {
   const absoluteDirectory = path.resolve(directory);
