@@ -1,8 +1,8 @@
 import path from 'path';
-import semver from 'semver';
 import fsPromises from 'fs/promises';
 import fs from 'fs-extra';
 import pacote from 'pacote';
+import AsyncLock from 'async-lock';
 import { ExcludePackageNames } from '../constants';
 import {
   meteorNameToNodeName,
@@ -11,10 +11,9 @@ import {
   versionsAreCompatible,
   meteorVersionToSemver,
 } from '../helpers/helpers';
-import { warn, error as logError } from '../helpers/log';
+import { warn } from '../helpers/log';
 import MeteorPackage, { TestSuffix } from './meteor-package';
 import { getNpmRc, registryForPackage } from '../helpers/ensure-npm-rc';
-import AsyncLock from 'async-lock';
 import ensureLocalPackage from '../helpers/ensure-local-package';
 import Catalog from './catalog';
 
@@ -247,7 +246,6 @@ export default class ConversionJob {
     if (this.#forceRefresh(meteorPackage.meteorName)) {
       return false;
     }
-    // TODO: version control? What if we've moved a package?
     const alreadyConvertedJson = await this.#alreadyConvertedJson(
       meteorPackage.meteorName,
       meteorPackage.version || meteorPackage.versionConstraint,
@@ -273,7 +271,7 @@ export default class ConversionJob {
     await this.#ensureRegistryConfig();
     const registry = await registryForPackage(nodeName, this.#npmrc);
     if (registry) {
-      // TODO: we should probably "always" do this in the future.
+      // NOTE: we should probably "always" do this in the future.
       // For now it'll only happen if we've explicitly pushed, which will always be to a custom registry
       try {
         const packageSpec = maybeVersionConstraint ? `${nodeName}@${meteorVersionToSemver(maybeVersionConstraint)}` : nodeName;
@@ -294,14 +292,15 @@ export default class ConversionJob {
 
   async #alreadyConvertedPath(meteorName) {
     const packagePath = meteorNameToNodePackageDir(meteorName);
-
-
-    // TODO: path mapping
-    const actualPath = path.join(this.#outputGeneralDirectory, packagePath, 'package.json');
-    if (await fs.pathExists(actualPath)) {
-      return actualPath;
-    }
-    return false;
+    const dirs = [this.#outputLocalDirectory, this.#outputSharedDirectory, this.#outputGeneralDirectory];
+    const results = await Promise.all(dirs.map(async (dir) => {
+      const actualPath = path.join(dir, packagePath, 'package.json');
+      if (await fs.pathExists(actualPath)) {
+        return actualPath;
+      }
+      return false;
+    }));
+    return results.filter(Boolean)[0];
   }
 
   async #alreadyConvertedJson(meteorName, maybeVersionConstraint) {
@@ -498,7 +497,6 @@ export default class ConversionJob {
     return Array.from(this.#packageMap.values()).filter((meteorPackage) => meteorPackage.isLocalOrShared());
   }
 
-  // TODO: remove
   delete(meteorNameAndMaybeVersionConstraint) {
     const [name] = meteorNameAndMaybeVersionConstraint.split('@');
     return this.#packageMap.delete(name);

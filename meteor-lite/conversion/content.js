@@ -2,8 +2,8 @@ import path from 'path';
 import * as acorn from 'acorn';
 import fsPromises from 'fs/promises';
 import { walk } from 'estree-walker';
-import { nodeNameToMeteorName, meteorNameToNodeName } from './helpers.js';
-import { acornOptions } from './globals.js';
+import { nodeNameToMeteorName, meteorNameToNodeName } from '../helpers/helpers.js';
+import { acornOptions } from './acorn-options';
 
 export async function getExportMainModuleStr(meteorName, mainModule, outputFolder, isCommon) {
   const ast = acorn.parse(

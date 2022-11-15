@@ -1,7 +1,7 @@
 import fsExtra from 'fs-extra';
 import fs from 'fs/promises';
 import path from 'path';
-import { listFilesInDir } from '../../commands/helpers/command-helpers';
+import listFilesInDir from '../../helpers/list-files';
 
 export default function queueForBuild(buildRoot, queue) {
   return {

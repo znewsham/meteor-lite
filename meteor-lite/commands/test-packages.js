@@ -1,6 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
-import { generateGlobals, readPackageJson } from './helpers/command-helpers';
+import { generateGlobals } from './helpers/command-helpers';
 import { getFinalPackageListForArch } from './helpers/final-package-list';
 import { meteorNameToNodeName } from '../helpers/helpers';
 import convertPackagesToNodeModulesForApp from './convert-packages-for-app';

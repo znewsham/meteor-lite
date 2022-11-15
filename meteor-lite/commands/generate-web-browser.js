@@ -1,5 +1,5 @@
 import _generateWebBrowser from '../build-run/client/generate-web-browser';
-import { baseBuildFolder } from './helpers/command-helpers.js';
+import { baseBuildFolder } from '../helpers/base-folder';
 
 export default async function generateWebBrowser(
   archName,

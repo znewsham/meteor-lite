@@ -3,9 +3,9 @@ import fsExtra from 'fs-extra';
 import fs from 'fs/promises';
 import path from 'path';
 import _ from 'underscore';
-import {
-  baseFolder, ensureBuildDirectory, readPackageJson,
-} from '../../commands/helpers/command-helpers.js';
+import ensureBuildDirectory from '../ensure-build-directory.js';
+import { baseFolder } from '../../helpers/base-folder.js';
+import readPackageJson from '../../helpers/read-package-json';
 import queueForBuild from './queue-plugin.js';
 
 const staticPath = path.join(path.dirname(import.meta.url), '..', '..', 'static').replace('file:', '');

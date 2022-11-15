@@ -1,6 +1,6 @@
 import fs from 'fs-extra';
 import ConversionJob from '../conversion/conversion-job.js';
-import { baseFolder } from './helpers/command-helpers.js';
+import { baseFolder } from '../helpers/base-folder';
 
 export default async function convertPackageToNodeModule({
   packageNames,

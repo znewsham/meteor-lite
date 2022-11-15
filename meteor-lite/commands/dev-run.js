@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import fsExtra from 'fs-extra';
-import { baseBuildFolder } from './helpers/command-helpers';
+import { baseBuildFolder } from '../helpers/base-folder';
 import generateServer, { generateConfigJson } from '../build-run/server/generate-server';
 import generateWebBrowser from '../build-run/client/generate-web-browser';
 import watchPackages from '../conversion/watch-packages';

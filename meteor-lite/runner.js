@@ -13,7 +13,7 @@ import generateMain from './commands/build-main.js';
 import prodBuild from './commands/prod-build.js';
 import connect from './commands/shell-client.js';
 import writePeerDependencies from './commands/write-peer-dependencies.js';
-import { baseBuildFolder } from './commands/helpers/command-helpers.js';
+import { baseBuildFolder } from './helpers/base-folder';
 import ensureLocalPackage from './commands/ensure-local-package.js';
 import { error as logError } from './helpers/log';
 

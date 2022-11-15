@@ -1,9 +1,8 @@
 import fsPromises from 'fs/promises';
 import * as acorn from 'acorn';
 import path from 'path';
-import { walk } from 'estree-walker';
 import { pathExists } from 'fs-extra';
-import { acornOptions } from './globals.js';
+import { acornOptions } from './acorn-options.js';
 
 export async function resolveFile(actualFile) {
   if (await pathExists(`${actualFile}.js`)) {

@@ -15,19 +15,14 @@ import {
 } from '../helpers/helpers.js';
 
 import { ParentArchs, ExcludePackageNames } from '../constants.js';
-import { getPackageGlobals, replaceGlobalsInFile, globalStaticImports } from '../helpers/globals.js';
-import packageJsContext from '../helpers/package-js-context.js';
-import { getExportStr, getExportMainModuleStr } from '../helpers/content.js';
+import { getPackageGlobals, replaceGlobalsInFile, globalStaticImports } from './globals.js';
+import packageJsContext from './package-js-context.js';
+import { getExportStr, getExportMainModuleStr } from './content.js';
 import MeteorArch from './meteor-arch.js';
 import { warn, error as logError } from '../helpers/log.js';
-import { listFilesInDir } from '../commands/helpers/command-helpers.js';
+import listFilesInDir from '../helpers/list-files';
 
-// TODO: the problem with this is some packages tests might require conflicting versions of packages they otherwise don't care about
-// e.g., our version of redis-oplog's tests require reywood:publish-composite@1.5.2 but our local version of publish-composite is 1.4.2
-// this would create a version conflict where none would have existed before.
-// I think when we're trying to convert a package and it's tests, we should run the command explicitly - potentially modifying an existing converted package
-const CONVERT_TEST_PACKAGES = false;
-
+// we need a "noop" package for when we have an import/export that should only be available to specific archs
 const NOOP_PACKAGE_NAME = '@meteor/noop';
 
 const writingSymbol = Symbol('writing');
@@ -97,18 +92,10 @@ function sortImports(imports) {
 
 function getImportStr(importsSet, isCommon) {
   if (isCommon) {
-    return sortImports(Array.from(importsSet)).map((imp) => {
-      // dependencies of a package don't respect lazy (for obvious reasons)
-      const suffix = ''; // job.get(nodeNameToMeteorName(imp))?.isLazy() ? '/__defineOnly.js' : '';
-      return `require("${imp}${suffix}");`;
-    }).join('\n');
+    return sortImports(Array.from(importsSet)).map((imp) => `require("${imp}");`).join('\n');
   }
 
-  return sortImports(Array.from(importsSet)).map((imp) => {
-    // dependencies of a package don't respect lazy (for obvious reasons)
-    const suffix = ''; // job.get(nodeNameToMeteorName(imp))?.isLazy() ? '/__defineOnly.js' : '';
-    return `import "${imp}${suffix}";`;
-  }).join('\n');
+  return sortImports(Array.from(importsSet)).map((imp) => `import "${imp}";`).join('\n');
 }
 
 const meteorVersionPlaceholderSymbol = Symbol('meteor-version-placeholder');
@@ -206,7 +193,7 @@ export default class MeteorPackage {
 
   #exportedGlobals;
 
-  #convertTestPackage = CONVERT_TEST_PACKAGES;
+  #convertTestPackage = false;
 
   #importOrder = 0;
 
@@ -214,7 +201,7 @@ export default class MeteorPackage {
     meteorName,
     versionConstraint,
     isTest,
-    convertTestPackage = CONVERT_TEST_PACKAGES,
+    convertTestPackage = false,
     job,
   }) {
     this.#meteorName = meteorName;
@@ -501,10 +488,8 @@ export default class MeteorPackage {
         ? maybeVersionConstraint.split(/\s*\|\|\s*/).map((constraint) => meteorVersionToSemver(constraint)).join(' || ')
         : meteorVersionPlaceholderSymbol;
       if (!opts?.unordered && !opts?.testOnly && !opts?.weak) {
-        // TODO check comment in tools/isobuild/package-api.js
         this.addImport(nodeName, archNames);
       }
-      // TODO: other opts?
     });
   }
 
@@ -514,22 +499,19 @@ export default class MeteorPackage {
     // implied pacakges are unordered (e.g., they load *after* the package itself)
     this.addMeteorDependencies(packages, archNames, { unordered: true });
     packages.forEach((dep) => {
-      const [name, maybeConstraint] = dep.split('@');
-      if (ExcludePackageNames.has(name)) {
+      const [meteorName, maybeConstraint] = dep.split('@');
+      if (ExcludePackageNames.has(meteorName)) {
         return;
       }
-      // this.#strongDependencies.add(dep);
-      const nodeName = MeteorPackage.meteorNameToNodeName(name);
 
       // even though implied packages are unordered, they are still immediate dependencies of this package,
       // they aren't circular dependencies
       this.#dependenciesToEnsure.add(dep);
       actualArchs.forEach((arch) => {
-        // TODO: should this be the node name? An implication is a purely meteor concept, used exclusively in the conversion
-        arch.addImpliedPackage(nodeName);
+        arch.addImpliedPackage(meteorName);
       });
       this.#implies.push({
-        name,
+        name: meteorName,
         constraint: maybeConstraint,
         archs: archNames,
       });
@@ -629,20 +611,6 @@ export default class MeteorPackage {
       },
       meteorTmp: {
         ...(this.#isLazy && { lazy: true }),
-        // the combination of all weak dependencies of this package
-        // AND all the ESM dependencies of this package if it is CJS
-        // this is required since right now require(esm) just exports
-        // the pre-defined package.
-        /* preload: this.archsToObject((arch) => arch.getPreloadPackages(true)),
-        // TODO: do the weakDependencies need to be present, even if we haven't converted them?
-        // Probably yes, will have to handle this after we handle version control
-        weakDependencies: Object.fromEntries(Array.from(this.#weakDependencies).map((packageNameAndMaybeVersionConstraint) => (this.getDependency(packageNameAndMaybeVersionConstraint) ? [
-          meteorNameToNodeName(packageNameAndMaybeVersionConstraint.split('@')[0]), this.getDependency(packageNameAndMaybeVersionConstraint).#version,
-        ] : undefined)).filter(Boolean)),
-        unordered: this.archsToObject((arch) => arch.getUnorderedOrImpliedPackages(true)),
-        dependencies: Object.fromEntries(Array.from(this.#strongDependencies).map((packageNameAndMaybeVersionConstraint) => [
-          meteorNameToNodeName(packageNameAndMaybeVersionConstraint.split('@')[0]), this.getDependency(packageNameAndMaybeVersionConstraint).#version,
-        ])), */
         exportedVars,
         ...(this.#convertTestPackage && this.#hasTests ? {
           testUses: this.#testPackage.#uses.map(({ name, constraint, ...rest }) => ({
@@ -696,8 +664,8 @@ export default class MeteorPackage {
         });
         archNames.forEach((archName) => {
           meteorPackage.getImplies(archName)
-            .forEach((imp) => {
-              const impPackageName = MeteorPackage.nodeNameToMeteorName(imp);
+            .forEach((impPackageName) => {
+              const imp = meteorNameToNodeName(impPackageName);
               const impliedPackage = this.getDependency(impPackageName);
               impliedPackage.getExportedVars(archName)
                 .forEach((exp) => {
@@ -739,11 +707,7 @@ export default class MeteorPackage {
     return this.#dependenciesToEnsure;
   }
 
-  // TODO: return type changes depending on whether we pass in a name.
   getImplies(archName) {
-    if (!archName) {
-      return Array.from(new Set(this.getAllArchs().flatMap((arch) => Array.from(arch.getImpliedPackages()))));
-    }
     return this.getArch(archName)?.getImpliedPackages() || new Set();
   }
 
@@ -872,8 +836,6 @@ export default class MeteorPackage {
       else {
         const actualPath = await fs.realpath(this.#folderPath);
 
-        // TODO: now we're able to detect the entire import tree, we should only copy those files (plus assets + package.js)
-        // the only problem here is we'd have to parse and copy the tree as one step since the tree may require cleaning.
         await fs.copy(
           actualPath,
           outputFolder,
@@ -909,8 +871,8 @@ export default class MeteorPackage {
       const importedGlobalsByArch = this.getImportedGlobalsMaps(allGlobals);
 
       // these are all the globals USED in the package. Not just those assigned.
-      // TODO: this should go away, but is needed for the exports/require/module hack below
-      // TODO: this probably isn't 'correct' - since it doesn't really consider per-arch "bad package globals"
+      // this should go away, but is needed for the exports/require/module hack below
+      // this probably isn't 'correct' - since it doesn't really consider per-arch "bad package globals"
       const badPackageGlobals = Array.from(allGlobals)
         .filter((global) => !Object.values(importedGlobalsByArch).find((archMap) => archMap.has(global)));
       let badTestPackageGlobals = [];
@@ -939,7 +901,7 @@ export default class MeteorPackage {
         };
       });
       if (this.#convertTestPackage && this.#hasTests) {
-        // TODO: puke - this entire chunk.
+        // puke - this entire chunk.
         const { archsForFiles: testArchsForFiles } = await this.#testPackage.getImportTreeForPackageAndClean(outputFolder);
         Array.from(testArchsForFiles.keys()).forEach((key) => {
           if (archsForFiles.has(key)) {
@@ -1039,7 +1001,6 @@ export default class MeteorPackage {
         if (this.isCommon()) {
           await fsPromises.writeFile(
             `${outputFolder}/__globals.js`,
-            // TODO support assets for cjs
             Array.from(exportNamesSet).map((name) => `module.exports.${name} = undefined;`).join('\n'),
           );
         }
@@ -1126,7 +1087,7 @@ export default class MeteorPackage {
         actualPath = servePath.split('/').slice(3).join('/');
       }
       if ((type === 'source' || type === 'prelink') && actualPath.startsWith('/packages/')) {
-        // TODO: because archName is mapped from os -> server, this won't work for server files - edgecase
+        // NOTE: because archName is mapped from os -> server, this won't work for server files - edgecase
         actualPath = actualPath.replace('/packages/', `/${archName}/`);
       }
       if (mainModule) {
@@ -1162,11 +1123,11 @@ export default class MeteorPackage {
         this.addAssets([aPath], [archName]);
       });
     if (json.declaredExports) {
-      json.declaredExports.forEach(({ name, testOnly }) => {
-        // TODO: handle this better - I'm not 100% sure how to handle it, we'd need to expose it on the json too sadly
-        if (true || !testOnly) {
-          this.addExports([name], [archName]);
-        }
+      json.declaredExports.forEach(({ name }) => {
+        // NOTE: this means we "leak" test only exports in prod. I'm totally fine with this
+        // we can't disable entirely since a tiny handful of packages provide test only exports
+        // since (it would appear, e.g., OplogHandle) that meteor treats any package global as an export, this is ok
+        this.addExports([name], [archName]);
       });
     }
   }
@@ -1355,7 +1316,7 @@ export default class MeteorPackage {
           }
           this.getAllArchs().forEach((arch) => {
             const impliedSet = importedPackage.getImplies(arch.archName);
-            impliedSet.forEach((name) => this.addImport(name, [arch.archName]));
+            impliedSet.forEach((meteorName) => this.addImport(meteorNameToNodeName(meteorName), [arch.archName]));
           });
         });
     }

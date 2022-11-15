@@ -1,5 +1,5 @@
 import path from 'path';
-import { getImportTreeForPackageAndClean } from '../helpers/globals.js';
+import { getImportTreeForPackageAndClean } from './globals.js';
 
 export default class MeteorArch {
   #archName;
@@ -57,8 +57,8 @@ export default class MeteorArch {
     this.#modified = true;
   }
 
-  addImpliedPackage(nodeName) {
-    this.#impliedPackages.add(nodeName);
+  addImpliedPackage(meteorName) {
+    this.#impliedPackages.add(meteorName);
     this.#modified = true;
   }
 
@@ -72,15 +72,6 @@ export default class MeteorArch {
       return this.#preloadPackages;
     }
     return new Set([...this.#parentArch?.getPreloadPackages() || [], ...this.#preloadPackages]);
-  }
-
-  // unordered are both { unordered: true } and implied packages,
-  // in that we're going to load an implied package, after we've loaded ourselves
-  getUnorderedOrImpliedPackages(justOwn = false) {
-    if (justOwn) {
-      return new Set([...this.#unorderedPackages, ...this.#impliedPackages]);
-    }
-    return new Set([...this.#parentArch?.getUnorderedOrImpliedPackages() || [], ...this.#unorderedPackages, ...this.#impliedPackages]);
   }
 
   #getImportsEntries() {

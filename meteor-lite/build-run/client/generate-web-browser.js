@@ -3,9 +3,10 @@ import fs from 'fs/promises';
 import fsExtra from 'fs-extra';
 import path from 'path';
 
-import {
-  listFilesInDir, generateProgram, ensureBuildDirectory, readPackageJson,
-} from '../../commands/helpers/command-helpers.js';
+import listFilesInDir from '../../helpers/list-files';
+import readPackageJson from '../../helpers/read-package-json';
+import ensureBuildDirectory from '../ensure-build-directory.js';
+import generateProgram from './generate-program';
 import { meteorNameToLegacyPackageDir, nodeNameToMeteorName } from '../../helpers/helpers.js';
 import { ParentArchs } from '../../constants.js';
 import blazePlugin from './blaze-plugin.js';

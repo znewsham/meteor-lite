@@ -1,4 +1,4 @@
-import { baseBuildFolder } from './helpers/command-helpers';
+import { baseBuildFolder } from '../helpers/base-folder';
 import _generateServer from '../build-run/server/generate-server';
 
 export default async function generateServer(

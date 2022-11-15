@@ -1,7 +1,8 @@
 import fs from 'fs-extra';
 import path from 'path';
 
-import { baseFolder, generateGlobals } from './helpers/command-helpers.js';
+import { baseFolder } from '../helpers/base-folder';
+import { generateGlobals } from './helpers/command-helpers.js';
 import ConversionJob from '../conversion/conversion-job.js';
 import { meteorNameToNodeName, meteorNameToNodePackageDir } from '../helpers/helpers.js';
 import { getFinalPackageListForArch } from './helpers/final-package-list';
