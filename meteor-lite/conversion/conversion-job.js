@@ -155,8 +155,12 @@ export default class ConversionJob {
         meteorNames.map((nv) => nv.split('@')[0]),
         meteorNamesAndVersions.map((nv) => new this.#packageVersionParser.PackageConstraint(nv)),
       );
-      // TODO: this is a shitty way of passing in test package names,
-      // I think in the future we can just do a second pass on every package
+      // NOTE: this is a shitty way of passing in test package names,
+      // but it's hard to unwind - specifically for the constraint solving
+      // we need to know which packages we're testing so we can load the test dependencies (which will include the package)
+      // I think in the future we can just do a second pass on every package - but it's not obvious how to get around the above
+      // not every package will provide test dependencies, and if we just give a static list to the constraint solver of "all these are test packages"
+      // we'll end up with a circular reference between a package and itself (e.g., everytime you see X load X-test and X-test depends on X)
       this.#testPackages = new Set(meteorNames
         .filter((meteorName) => meteorName.endsWith(TestSuffix))
         .map((meteorName) => meteorName.replace(TestSuffix, '')));
