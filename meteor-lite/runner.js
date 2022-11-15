@@ -168,8 +168,14 @@ program
   .requiredOption('--driver-package <driverPackage>', 'the test driver to use')
   .option('-d, --directories <directories...>', 'the prioritized list of additional directories to search for packages')
   .option('--extra-packages <extraPackages...>', 'any extra packages to load')
+  .option('--test-directory <testDirectory>', 'a path to a test directory to use (useful for debugging)')
   .action(async ({
-    directories, packages, driverPackage, extraPackages, meteor,
+    directories,
+    packages,
+    driverPackage,
+    extraPackages,
+    meteor,
+    testDirectory,
   }) => {
     const job = await buildAppForTestPackages({
       directories,
@@ -177,7 +183,7 @@ program
       driverPackage,
       extraPackages,
       meteorInstall: meteor || `${os.homedir()}/.meteor`,
-
+      testDirectory,
     });
     const testMetadata = {
       driverPackage,

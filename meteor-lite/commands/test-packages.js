@@ -5,10 +5,10 @@ import { getFinalPackageListForArch } from './helpers/final-package-list';
 import { meteorNameToNodeName } from '../helpers/helpers';
 import convertPackagesToNodeModulesForApp from './convert-packages-for-app';
 import npmInstall from './helpers/npm-install';
-import { TestSuffix } from '../conversion/meteor-package';
 import dependencyEntry from './helpers/dependency-entry';
 import writePeerDependencies from './write-peer-dependencies';
 import tmp from 'tmp';
+import { TestSuffix } from '../conversion/meteor-package';
 
 // it's possible these should just be handled by the existing extraPackages argument.
 const staticImports = [
@@ -44,10 +44,10 @@ function dependenciesToString(nodePackagesVersionsAndExports, clientOrServer) {
   return [...importsToWrite, ...globalsToWrite].filter(Boolean).join('\n');
 }
 
-async function initProjectDirectory() {
-  const directoryObj = { name: '../test-packages' }; /*tmp.dirSync({
+async function initProjectDirectory(testDirectory) {
+  const directoryObj = testDirectory ? { name: testDirectory } : tmp.dirSync({
     unsafeCleanup: true,
-  });*/
+  });
   const directory = directoryObj.name;
   const packageJsonPath = path.join(directory, 'package.json');
   const mainClientPath = 'client/main.js';
@@ -95,10 +95,11 @@ export default async function buildAppForTestPackages({
   driverPackage,
   extraPackages = [],
   meteorInstall,
+  testDirectory,
 }) {
   const absoluteMeteorInstall = path.resolve(meteorInstall);
   const absoluteDirectories = directories.map((dir) => path.resolve(dir));
-  const { packageJson, outputDirectory } = await initProjectDirectory();
+  const { packageJson, outputDirectory } = await initProjectDirectory(testDirectory);
   const { client: clientMain, server: serverMain } = packageJson.meteor.mainModule;
 
   let allPackages = [
