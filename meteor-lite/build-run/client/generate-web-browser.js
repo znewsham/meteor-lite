@@ -13,8 +13,7 @@ import lessPlugin from './less-plugin.js';
 import stubsPlugin from './stubs-plugin.js';
 import onStart from './start-plugin.js';
 import onEnd from './end-plugin.js';
-
-const cacheMap = new Map();
+import Cache from '../cache.js';
 
 // can't actually be weak since `build` is new each time.
 const weakMap = new Map();
@@ -31,8 +30,10 @@ async function buildClient({
   let isInitial = true;
   const buildRoot = path.resolve('./');
   const cacheDirectory = path.resolve(path.join(outputBuildFolder, 'cache'));
-  await fsExtra.ensureDir(cacheDirectory);
   const wasPaused = new Map();
+  const cache = new Cache(cacheDirectory);
+  await cache.init();
+
   // eslint-disable-next-line
   const build = await esbuild.build({
     absWorkingDir: process.cwd(), // it doesn't seem like this shoudl be needed, but because the test-packages commands uses chdir it seems it is
@@ -58,8 +59,8 @@ async function buildClient({
     },
     plugins: [
       // TODO: swap to holistic cache implementation
-      blazePlugin(cacheDirectory, cacheMap),
-      lessPlugin(cacheDirectory, cacheMap),
+      blazePlugin(cache),
+      lessPlugin(cache),
       stubsPlugin(buildRoot),
       onStart(async () => {
         if (isInitial) {

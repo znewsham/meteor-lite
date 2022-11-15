@@ -9,8 +9,6 @@ export const ParentArchs = new Map([
 // these packages will all be ignored, mostly they're build packages,
 // the only ones that aren't have a strong dependency on modules package
 export const ExcludePackageNames = new Set([
-  // TODO: this causes trouble with shell-server
-  // 'ecmascript', - we need this because of how stupid meteor packages are, that they get access to the globals of every package dependency
   'typescript',
   'coffeescript',
   'modules',
@@ -34,7 +32,7 @@ export const ExcludePackageNames = new Set([
   'isobuild:isopack-2',
   'reload-safetybelt', // not "really" required - but it doesn't play nice with client side modules (it expects the file to finish sync)
   'stylus',
-  // these are just helpers so we can pass in the packages directory for conversion
+  // these are just helpers (not real packages) so we can pass in the packages directory for conversion
   'deprecated',
   'non-core',
 

@@ -1,45 +1,30 @@
 import fs from 'fs/promises';
 import less from 'less';
-import { getCacheEntry, setCacheEntry } from './helpers';
 
-export default function lessPlugin(cacheDirectory, cacheMap) {
+let inProg = Promise.resolve();
+export default function lessPlugin(cache) {
   return {
     name: 'less',
     async setup(build) {
       build.onLoad(
         { filter: /.(less|lessimport)$/ },
         async ({ path: filePath }) => {
-          const stat = await fs.stat(filePath);
-          const cacheKey = stat.mtime.toString();
-          const cached = cacheMap.get(filePath);
-          if (cached && cached.cacheKey === cacheKey) {
-            return cached.result;
-          }
-          if (cached) {
-            cached.invalidates.forEach((invalidated) => cacheMap.delete(invalidated));
+          if (cache) {
+            const cached = await cache.get(filePath);
+            if (cached) {
+              return {
+                contents: cached.contents,
+                loader: 'css',
+              };
+            }
           }
           if (filePath.endsWith('.import.less')) {
             const res = {
               contents: '',
               loader: 'css',
             };
-            cacheMap.set(filePath, { result: res, cacheKey, invalidates: new Set() });
+            cache.set(filePath, '');
             return res;
-          }
-          if (cacheDirectory) {
-            const cacheContents = await getCacheEntry(cacheDirectory, filePath, stat.mtimeMs);
-            if (cacheContents) {
-              const res = {
-                contents: cacheContents,
-                loader: 'css',
-              };
-              cacheMap.set({
-                result: res,
-                cacheKey,
-                invalidates: new Set(),
-              });
-              return res;
-            }
           }
           const result = await less.render((await fs.readFile(filePath)).toString('utf8'), {
             filename: filePath,
@@ -48,24 +33,15 @@ export default function lessPlugin(cacheDirectory, cacheMap) {
             sourceMap: { outputSourceFiles: true },
           });
 
-          if (cacheDirectory) {
-            setCacheEntry(cacheDirectory, filePath, result.css);
-          }
-
           const res = {
             contents: result.css,
             loader: 'css',
           };
-
-          cacheMap.set(filePath, {
-            result: res,
-            cacheKey,
-            invalidates: new Set(),
-          });
-          result.imports.forEach((imp) => {
-            cacheMap.get(imp).invalidates.add(filePath);
-          });
-
+          if (cache) {
+            await cache.set(filePath, result.css);
+            // NOTE: this assumes that any imports have already been parsed as without
+            result.imports.map(async (imp) => cache.addInvalidator(imp, filePath));
+          }
           return res;
         },
       );

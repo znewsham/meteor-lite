@@ -1,7 +1,22 @@
 import fs from 'fs/promises';
-import { getCacheEntry, setCacheEntry } from './helpers';
+import path from 'path';
 
-export default function blazePlugin(cacheDirectory, cacheMap) {
+let htmlHeader;
+const htmlHeaderPath = path.join(path.dirname(import.meta.url.replace('file:', '')), 'blaze-html-header.js');
+async function getHtmlHeader() {
+  if (!htmlHeader) {
+    htmlHeader = (await fs.readFile(htmlHeaderPath)).toString().split('\n').filter((line) => !line.startsWith('//')).join('\n');
+  }
+  return htmlHeader;
+}
+
+async function getTemplatingTools() {
+  await import('@meteor/modern-browsers');
+  const { TemplatingTools } = await import('@meteor/templating-tools');
+  return TemplatingTools;
+}
+
+export default function blazePlugin(cache) {
   return {
     name: 'blaze',
     async setup(build) {
@@ -10,32 +25,17 @@ export default function blazePlugin(cacheDirectory, cacheMap) {
       // and the CJS entry point for an ESM module just re-exports Package[name]
       // we need to import the CJS module first.
       // this isn't "required" in an app because the generation of dependencies.js handles this
-      await import('@meteor/modern-browsers');
-      const { TemplatingTools } = await import('@meteor/templating-tools');
+      const TemplatingTools = await getTemplatingTools();
       build.onLoad(
         { filter: /\.html$/ },
         async ({ path: filePath }) => {
-          const stat = await fs.stat(filePath);
-          const cacheKey = stat.mtime.toString();
-          if (cacheMap.has(filePath)) {
-            const cached = cacheMap.get(filePath);
-            if (cached.cacheKey === cacheKey) {
-              return cached.result;
-            }
-          }
-
-          if (cacheDirectory) {
-            const cacheContents = await getCacheEntry(cacheDirectory, filePath, stat.mtimeMs);
-            if (cacheContents) {
-              const res = {
-                contents: cacheContents,
+          if (cache) {
+            const cached = await cache.get(filePath);
+            if (cached) {
+              return {
+                contents: cached.contents,
                 loader: 'js',
               };
-              cacheMap.set({
-                result: res,
-                cacheKey,
-              });
-              return res;
             }
           }
           const contents = (await fs.readFile(filePath)).toString();
@@ -47,27 +47,19 @@ export default function blazePlugin(cacheDirectory, cacheMap) {
           const result = TemplatingTools.compileTagsWithSpacebars(tags);
           // most app html files don't need this (and can't use it anyway) but package globals aren't global anymore, so we need to import them
           // this happens as part of the conversion for JS, but HTML is compiled OTF.
-          // TODO: move this to a static file
-          const needsImport = true; // filePath.includes('/node_modules/') || filePath.includes('/npm-packages/') || filePath.includes('/packages/'); // hack for symlinks
           const importStr = [
             filePath.includes('templating-runtime')
               ? 'import globals from "./__globals.js"; const { Template } = globals'
               : 'import { Template } from "@meteor/templating-runtime"',
-            'import { HTML } from "@meteor/htmljs";',
-            'import { Blaze } from "@meteor/blaze";',
-            'import { Spacebars } from "@meteor/spacebars";',
-            'import { Meteor } from "@meteor/meteor";', // needed in case the HTML has <body> tags
+            await getHtmlHeader(),
           ].join('\n');
           const res = {
-            contents: `${needsImport ? importStr : ''}${result.js}`,
+            contents: `${importStr}${result.js}`,
             loader: 'js',
           };
-
-          if (cacheDirectory) {
-            setCacheEntry(cacheDirectory, filePath, res.contents);
+          if (cache) {
+            await cache.set(filePath, res.contents);
           }
-
-          cacheMap.set(filePath, { result: res, cacheKey });
           return res;
         },
       );
