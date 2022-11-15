@@ -1,69 +1,6 @@
 import { meteorVersionToSemver } from '../../helpers/helpers';
 import recurseMeteorNodePackages from './recurse-meteor-node-packages';
 
-// this was an attempt to get the load order correct, but it failed misserably.
-// the load order of weak + strong dependencies is very strange, e.g.,:
-/*
-  ecmascript-runtime
-  ...
-  modern-browsers
-  es5-shim
-  promise
-  ecmascript-runtime-client
-*/
-function populateReturnList2(nodeNames, ret, loaded, written) {
-  if (!nodeNames.length) {
-    return;
-  }
-  const allPreDeps = new Set();
-  const allPostDeps = new Set();
-  const weakDeps = new Set();
-  const toPush = [];
-  nodeNames.forEach((nodeName) => {
-    if (written.has(nodeName)) {
-      return;
-    }
-    written.add(nodeName);
-    const deps = loaded.get(nodeName);
-    if (deps.uses) {
-      deps.uses.forEach(({ name: depNodeName, weak, unordered }) => {
-        if (weak) {
-          weakDeps.add(depNodeName);
-        }
-        if (unordered) {
-          allPostDeps.add(depNodeName);
-        }
-        else {
-          allPreDeps.add(depNodeName);
-        }
-      });
-    }
-    else {
-      deps.strong.forEach((depNodeName) => {
-        allPreDeps.add(depNodeName);
-      });
-      deps.preload.forEach((depNodeName) => {
-        allPreDeps.add(depNodeName);
-        weakDeps.add(depNodeName);
-      });
-      deps.unordered.forEach((depNodeName) => {
-        allPostDeps.add(depNodeName);
-      });
-    }
-    toPush.push({
-      nodeName,
-      isLazy: deps.isLazy,
-      onlyLoadIfProd: deps.isProdOnlyImplied,
-      json: deps.json,
-    });
-  });
-  const depsToPreLoad = Array.from(allPreDeps).filter((depNodeName) => !written.has(depNodeName) && (!weakDeps.has(depNodeName) || loaded.has(depNodeName)));
-  const depsToPostLoad = Array.from(allPostDeps).filter((depNodeName) => !written.has(depNodeName));
-  populateReturnList2(depsToPreLoad, ret, loaded, written);
-  ret.push(...toPush);
-  populateReturnList2(depsToPostLoad, ret, loaded, written);
-}
-
 function populateReturnList(nodeName, ret, loaded, written, chain = []) {
   if (written.has(nodeName)) {
     return;
@@ -73,7 +10,7 @@ function populateReturnList(nodeName, ret, loaded, written, chain = []) {
   if (!deps) {
     return; // this better be because it's a node module...
   }
-  // TODO: the order here is still wrong - but the code is marginally cleaner.
+  // NOTE: the order here is still wrong - but the code is marginally cleaner.
   // if we care about the *exact* order, we need to fetch "all the dependencies of preload and strong in order"
   // then output all the dependencies first, then strong/preload in order.
   // this is still recursive, but the recursion happens at the "package" layer rather than "per dependency"
@@ -145,7 +82,7 @@ function populateDependencies({
       // something not prod-only is requiring this.
       existing.isProdOnlyImplied = false;
     }
-    // TODO: version control here?
+    // NOTE: version control here?
     // if we've pulled in a newer version we should replace?
     // Or is this already handled by the version constraints earlier?
     return [];
@@ -195,7 +132,7 @@ function populateDependencies({
   ];
 }
 
-export async function getFinalPackageListForArch(nodePackagesAndVersions, archName) {
+export async function getFinalPackageListForArch(nodePackagesAndVersions, archName, localDirs) {
   const loaded = new Map();
   const written = new Set();
   await recurseMeteorNodePackages(
@@ -218,6 +155,9 @@ export async function getFinalPackageListForArch(nodePackagesAndVersions, archNa
       dependenciesMap: loaded,
       archName,
     }),
+    {
+      localDirs
+    },
   );
   const ret = [];
   nodePackagesAndVersions.forEach(({ nodeName }) => {

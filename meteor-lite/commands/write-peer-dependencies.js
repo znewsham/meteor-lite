@@ -3,7 +3,7 @@ import { ExcludePackageNames } from '../constants';
 import { meteorNameToNodeName } from '../helpers/helpers';
 import calculateVersions from './helpers/calculate-versions';
 
-export default async function writePeerDependencies({ name, nodePackagesAndVersions }) {
+export default async function writePeerDependencies({ name, nodePackagesAndVersions, localDirs }) {
   const packageJson = JSON.parse((await fs.readFile('./package.json')).toString());
   let meteorPackageNamesMaybeWithVersions = nodePackagesAndVersions;
   if (!nodePackagesAndVersions && await fs.pathExists('.meteor/packages')) {
@@ -32,12 +32,15 @@ export default async function writePeerDependencies({ name, nodePackagesAndVersi
         version,
       }))
       .filter(({ nodeName }) => nodeName !== name)
-      // TODO: maybe figure out how to get this to play nice with github, I don't think we really care too much
+      // NOTE: maybe figure out how to get this to play nice with github, I don't think we really care too much
       .filter(({ version }) => !version.startsWith('git'));
   }
 
   // TODO: make calculateVersions work with the meteor constraint solver.
-  const { finalVersions, badVersions } = await calculateVersions(meteorPackageNamesMaybeWithVersions);
+  const { finalVersions, badVersions } = await calculateVersions(
+    meteorPackageNamesMaybeWithVersions,
+    localDirs,
+  );
   Object.keys(finalVersions).forEach((nodeName) => {
     if (packageJson.dependencies[nodeName]) {
       delete finalVersions[nodeName];
@@ -71,6 +74,6 @@ export default async function writePeerDependencies({ name, nodePackagesAndVersi
   packageJson.dependencies = Object.fromEntries(Object.entries(packageJson.dependencies).sort(([aName], [bName]) => aName.localeCompare(bName)));
   await fs.ensureDir(name);
   await fs.writeFile(`./${name}/package.json`, JSON.stringify(ret, null, 2));
-  packageJson.dependencies[name] = `file:${name}`; // TODO: sort dependencies
+  packageJson.dependencies[name] = `file:${name}`;
   return fs.writeFile('./package.json', JSON.stringify(packageJson, null, 2));
 }

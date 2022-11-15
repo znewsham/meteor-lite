@@ -53,16 +53,16 @@ async function initProjectDirectory() {
   const mainClientPath = 'client/main.js';
   const mainServerPath = 'server/main.js';
   await fs.ensureDir(directory);
+  if (await fs.pathExists('.npmrc')) {
+    await fs.copyFile('.npmrc', path.join(directory, '.npmrc'));
+  }
   await Promise.all([
     fs.ensureDir(path.join(directory, 'client')),
     fs.ensureDir(path.join(directory, 'server')),
     fs.ensureDir(path.join(directory, '.meteor')),
-
-    // TODO: we need to build this from an actual npmrc and for more than just meteor.
-    fs.writeFile(path.join(directory, '.npmrc'), 'always-auth = true\nregistry = http://verdaccio:4873/\n@meteor:registry=http://verdaccio:4873/'),
   ]);
-  // TODO: maybe just write the required packages out here
-  await fs.writeFile(path.join(directory, '.meteor', 'versions'), '');
+
+  // NOTE: this is hacky - we should move to allowing these to be read from package.json
   await fs.writeFile(path.join(directory, '.meteor', 'release'), '');
   await fs.writeFile(path.join(directory, '.meteor', '.id'), '');
   const packageJson = {
@@ -70,7 +70,7 @@ async function initProjectDirectory() {
     type: 'module',
     dependencies: {
       jquery: '3.6.1',
-      fibers: 'file:///home/zacknewsham/Sites/node-fibers', // 'git+https://github.com/qualialabs/node-fibers.git#3229cdda21052a36afdebcd88facfc83a24f24bb',
+      fibers: 'git+https://github.com/qualialabs/node-fibers.git#d6788269d7886bc1d4a4d287bc59a3e1cc93779b',
       'meteor-node-stubs': '1.2.5',
     },
     meteor: {
@@ -131,11 +131,16 @@ export default async function buildAppForTestPackages({
       evaluateTestPackage: underTest.has(meteorName),
     };
   });
-  await writePeerDependencies({ name: 'meteor-peer-dependencies', nodePackagesAndVersions });
+
+  const localDirs = [
+    outputDirectory,
+  ].filter(Boolean);
+
+  await writePeerDependencies({ name: 'meteor-peer-dependencies', nodePackagesAndVersions, localDirs });
   await npmInstall();
 
-  const serverPackages = await getFinalPackageListForArch(nodePackagesAndVersions, 'server');
-  const clientPackages = await getFinalPackageListForArch(nodePackagesAndVersions, 'client');
+  const serverPackages = await getFinalPackageListForArch(nodePackagesAndVersions, 'server', localDirs);
+  const clientPackages = await getFinalPackageListForArch(nodePackagesAndVersions, 'client', localDirs);
   await fs.writeFile(
     clientMain,
     `${dependenciesToString(clientPackages, 'client')}\n${underTestString}\nrunTests();`,

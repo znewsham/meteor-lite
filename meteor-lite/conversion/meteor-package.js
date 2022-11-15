@@ -196,7 +196,7 @@ export default class MeteorPackage {
 
   #hasTests;
 
-  isFullyLoaded;
+  isFullyLoaded; // TODO: this is poorly named - I forget what it was for originally, it is now used to short circuit things but doesnt *actually* fully loaded
 
   #shouldBeWritten;
 
@@ -851,7 +851,7 @@ export default class MeteorPackage {
     try {
       const shortCircuit = await this.writeDependencies(outputParentFolderMapping);
       // this must be after the writeDependencies to ensure that any missing dependencies are written out correctly (edge casey)
-      if (shortCircuit || !this.#shouldBeWritten) {
+      if (!convertTests && (shortCircuit || !this.#shouldBeWritten)) {
         return;
       }
       if (convertTests && this.#convertTestPackage && this.#hasTests && !this.#startedWritingTest) {

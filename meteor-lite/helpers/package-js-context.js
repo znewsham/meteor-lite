@@ -1,5 +1,4 @@
 import module from 'module';
-import { getCorePackageVersion } from './ensure-local-package';
 
 const aRequire = module.createRequire(import.meta.url);
 
@@ -75,21 +74,6 @@ async function callbackWrapper(meteorPackage, cb, isTest = false) {
       meteorPackage.setMainModule(file, archs, { ...opts, testOnly: isTest });
     },
   });
-
-  /*if (meteorVersion) {
-    await Promise.all([...useCalls, ...implyCalls].map(async (useOrImplyCall) => {
-      useOrImplyCall.packages = await Promise.all(useOrImplyCall.packages.map(async (packageAndMaybeVersion) => {
-        if (packageAndMaybeVersion.includes('@')) {
-          return packageAndMaybeVersion;
-        }
-        const version = await getCorePackageVersion({ meteorVersion, meteorInstall, name: packageAndMaybeVersion });
-        if (!version) {
-          return packageAndMaybeVersion;
-        }
-        return `${packageAndMaybeVersion}@${version}`;
-      }));
-    }));
-  }*/
   useCalls.forEach(({ packages, archs, opts }) => {
     meteorPackage.addMeteorDependencies(packages, archs, opts);
   });

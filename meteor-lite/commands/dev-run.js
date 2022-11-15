@@ -4,16 +4,25 @@ import fsExtra from 'fs-extra';
 import { baseBuildFolder } from './helpers/command-helpers';
 import generateServer, { generateConfigJson } from '../build-run/server/generate-server';
 import generateWebBrowser from '../build-run/client/generate-web-browser';
-import watchPackages from './helpers/watch-packages';
+import watchPackages from '../conversion/watch-packages';
 
 class AppProcess {
   #testMetadata;
 
   #archs;
 
-  constructor(archs, { testMetadata } = {}) {
+  #nodeArgs;
+
+  static #constantNodeArgs = [
+    '--no-wasm-code-gc', // HACK - maybe removable after we move to thread based fibers, maybe not at all
+    '--experimental-specifier-resolution=node',
+    '--conditions=development',
+  ];
+
+  constructor(archs, { testMetadata, nodeArgs = [] } = {}) {
     this.#archs = archs;
     this.#testMetadata = testMetadata;
+    this.#nodeArgs = nodeArgs;
   }
 
   async restartServer() {
@@ -68,15 +77,14 @@ class AppProcess {
     const shellDir = process.env.METEOR_SHELL_DIR || path.resolve(path.join(baseBuildFolder, 'shell'));
     await fsExtra.ensureDir(shellDir);
     const ipc = await AppProcess.LoadInterProcessMessaging();
+    process.chdir('.meteor/local/server/'); // only needed (arguably) for @qualia:prod-shell otherwise it writes to the actual app dir
     this.process = spawn(
       'node',
       [
-        '--inspect=0.0.0.0:9229',
-        '--no-wasm-code-gc', //TODO  hack
-        '--experimental-specifier-resolution=node',
-        '--conditions=development',
-        '.meteor/local/server/main.js',
-        '.meteor/local/server/config.json',
+        ...this.#nodeArgs,
+        ...AppProcess.#constantNodeArgs,
+        'main.js',
+        'config.json',
       ],
       {
         stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
@@ -110,8 +118,31 @@ class AppProcess {
   }
 }
 
-export default async function run(archs, { buildAndWatchPackages, job, watchAll = false, testMetadata } = {}) {
-  const appProcess = new AppProcess(archs, { testMetadata });
+export default async function run(
+  archs,
+  {
+    buildAndWatchPackages,
+    job,
+    watchAll = false,
+    testMetadata,
+    inspect,
+    inspectBrk,
+  } = {},
+) {
+  const nodeArgs = [];
+  if (inspectBrk) {
+    nodeArgs.push(`--inspect-brk${inspectBrk === true ? '' : `=${inspectBrk}`}`);
+  }
+  else if (inspect) {
+    nodeArgs.push(`--inspect${inspect === true ? '' : `=${inspect}`}`);
+  }
+  const appProcess = new AppProcess(
+    archs,
+    {
+      testMetadata,
+      nodeArgs
+    },
+  );
 
   if (buildAndWatchPackages) {
     watchPackages(job, { watchAll });

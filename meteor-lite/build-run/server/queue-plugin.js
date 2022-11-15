@@ -3,12 +3,6 @@ import fs from 'fs/promises';
 import path from 'path';
 import { listFilesInDir } from '../../commands/helpers/command-helpers';
 
-// TODO - remove this
-const nodeModulePrefixesToWatch = [
-  '@meteor',
-  '@qualia',
-];
-
 export default function queueForBuild(buildRoot, queue) {
   return {
     name: 'queue-for-build',
@@ -17,7 +11,6 @@ export default function queueForBuild(buildRoot, queue) {
       build.onResolve({ filter: /.*/ }, async ({ kind, path: filePath, resolveDir }) => {
         const watchFiles = [];
         const watchDirs = [];
-        const watchingPrefix = nodeModulePrefixesToWatch.find((prefix) => filePath.startsWith(prefix));
         if (kind === 'entry-point') {
           return {
             path: path.resolve(path.join(buildRoot, filePath)),
@@ -25,14 +18,11 @@ export default function queueForBuild(buildRoot, queue) {
             watchDirs,
           };
         }
-        if ((!filePath.startsWith('.') && !filePath.startsWith('/')) && !watchingPrefix) {
-          return {
-            external: true,
-            watchFiles,
-            watchDirs,
-          };
-        }
-        if (watchingPrefix) {
+        // NOTE: this only works because the dependencies.js file imports every package. Otherwise we'd have to recurse into
+        // every package (or at least every meteor package, arguably) to maybe watch every one of it's dependencies
+        // we could possibly do this by just not treating them as external
+        // this would be more correct - would follow the imports - and would trigger fewer server rebuilds incorrectly
+        if (!filePath.startsWith('.') && !filePath.startsWith('/')) {
           let resolved = (await build.resolve(`node_modules/${filePath}`, { resolveDir })).path;
 
           // eslint-disable-next-line

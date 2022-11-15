@@ -35,7 +35,9 @@ export default class ConversionJob {
 
   #meteorInstall;
 
-  #options;
+  #forceRefreshOptions;
+
+  #skipNonLocalIfPossible;
 
   #packageMap = new Map();
 
@@ -62,7 +64,8 @@ export default class ConversionJob {
     outputLocalDirectory,
     meteorInstall,
     otherPackageFolders,
-    options, // TODO: break this out
+    forceRefresh,
+    skipNonLocalIfPossible = true,
     checkVesions = false,
   }) {
     this.#outputGeneralDirectory = path.resolve(outputGeneralDirectory);
@@ -77,7 +80,8 @@ export default class ConversionJob {
       ...this.#otherPackageFolders,
     ].filter(Boolean);
     this.#meteorInstall = meteorInstall;
-    this.#options = options;
+    this.#forceRefreshOptions = forceRefresh;
+    this.#skipNonLocalIfPossible = skipNonLocalIfPossible;
     this.#checkVersions = checkVesions;
   }
 
@@ -131,7 +135,6 @@ export default class ConversionJob {
         warn(e.message);
       }
 
-      // TODO: convert to versionRecord?
       localPackageMap.set(meteorName, {
         versionRecord: meteorPackage.versionRecord,
         testVersionRecord: meteorPackage.testVersionRecord,
@@ -201,8 +204,8 @@ export default class ConversionJob {
     if (!meteorPackage) { // the package was already converted
       return false;
     }
-    meteorPackage.isFullyLoaded = true; // TODO
-    if (this.#options.skipNonLocalIfPossible) {
+    meteorPackage.isFullyLoaded = true;
+    if (this.#skipNonLocalIfPossible) {
       const packageJsPathObject = await this.#findPackageJs(meteorPackage.meteorName, true);
       if (!packageJsPathObject) {
         const isGood = await this.convertFromExistingIfPossible(meteorPackage, meteorPackage.type);
@@ -410,14 +413,14 @@ export default class ConversionJob {
   }
 
   #forceRefresh(meteorName) {
-    if (!this.#options.forceRefresh) {
+    if (!this.#forceRefreshOptions) {
       return false;
     }
-    if (this.#options.forceRefresh === true) {
+    if (this.#forceRefreshOptions === true) {
       return true;
     }
-    if (this.#options.forceRefresh instanceof Set) {
-      return this.#options.forceRefresh.has(meteorName);
+    if (this.#forceRefreshOptions instanceof Set) {
+      return this.#forceRefreshOptions.has(meteorName);
     }
     return true;
   }

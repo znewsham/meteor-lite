@@ -71,7 +71,6 @@ export default class Catalog {
     }
     const localPackage = this.#localPackages.get(actualPkgName);
     if (!localPackage && isTest) {
-      // TODO: we should try to pull from a converted package and not fallback to meteor until we have to.
       throw new Error(`tried to load test package ${actualPkgName} but no source code found`);
     }
     if (!localPackage) {
@@ -90,7 +89,6 @@ export default class Catalog {
     }
     const localPackage = this.#localPackages.get(actualPkgName);
     if (!localPackage && isTest) {
-      // TODO: we should try to pull from a converted package and not fallback to meteor until we have to.
       throw new Error(`tried to load test package ${actualPkgName} but no source code found`);
     }
     if (!localPackage) {

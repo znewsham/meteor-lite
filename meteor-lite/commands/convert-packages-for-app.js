@@ -55,18 +55,12 @@ export default async function convertPackagesToNodeModulesForApp({
     .map((line) => line.split('#')[0].trim().split('@')[0])
     .filter(Boolean);
 
-  const appVersions = (await fs.readFile(`${baseFolder}/versions`))
+  const appVersions = (await fs.pathExists(`${baseFolder}/versions`)) ? (await fs.readFile(`${baseFolder}/versions`))
     .toString()
     .split('\n')
     .map((line) => line.split('#')[0].trim())
-    .filter(Boolean);
+    .filter(Boolean) : [];
 
-  const options = {
-    forceRefresh,
-    skipNonLocalIfPossible: true,
-    // TODO: this assumes ./packages and ./.common are first - we should instead make this an option
-    localPackageFolders: otherPackageFolders.slice(0, 2),
-  };
 
   const job = new ConversionJob({
     outputGeneralDirectory,
@@ -74,7 +68,8 @@ export default async function convertPackagesToNodeModulesForApp({
     outputLocalDirectory,
     otherPackageFolders,
     meteorInstall,
-    options,
+    forceRefresh,
+    skipNonLocalIfPossible: true,
     checkVesions: true,
   });
 
@@ -114,9 +109,15 @@ export default async function convertPackagesToNodeModulesForApp({
     ...packageJsonEntries,
   }).sort(([a], [b]) => a.localeCompare(b)));
 
+  const localDirs = [
+    outputGeneralDirectory,
+    outputSharedDirectory,
+    outputLocalDirectory,
+  ].filter(Boolean);
+
   await fs.writeFile('./package.json', JSON.stringify(packageJson, null, 2));
   if (updateDependencies) {
-    await writePeerDependencies({ name: 'meteor-peer-dependencies' });
+    await writePeerDependencies({ name: 'meteor-peer-dependencies', localDirs });
     const nodePackagesAndVersions = actualPackages.map((meteorName) => {
       const nodeName = meteorNameToNodeName(meteorName);
       const { version } = job.get(meteorName);
@@ -126,8 +127,8 @@ export default async function convertPackagesToNodeModulesForApp({
       };
     });
     const [serverPackages, clientPackages] = await Promise.all([
-      getFinalPackageListForArch(nodePackagesAndVersions, 'server'),
-      getFinalPackageListForArch(nodePackagesAndVersions, 'client'),
+      getFinalPackageListForArch(nodePackagesAndVersions, 'server', localDirs),
+      getFinalPackageListForArch(nodePackagesAndVersions, 'client', localDirs),
     ]);
     await Promise.all([
       updateDependenciesForArch(serverPackages, 'server'),

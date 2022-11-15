@@ -84,7 +84,6 @@ async function installPackage(packageVersionObject, packageVersionBuildObject, m
   // otherpackage-x.y.z
   const internalFolderName = (await fs.readdir(extractFolderPath))[0];
   if (await fs.pathExists(pathToPackage)) {
-    // TODO: something feels wrong here
     warn('why does this path exist?!', pathToPackage);
     await Util.promisify(rimraf)(pathToPackage);
   }
@@ -93,17 +92,16 @@ async function installPackage(packageVersionObject, packageVersionBuildObject, m
     pathToPackage,
   );
 
-  const all = await getAllFilesAndFolders(pathToPackage);
-
-  // TODO: way to strong
-  await Promise.all(all.map((filePath) => fs.chmod(filePath, '777')));
+  // NOTE: we're not going to do this - it's an edge case for when two different users are running commands
+  // const all = await getAllFilesAndFolders(pathToPackage);
+  // await Promise.all(all.map((filePath) => fs.chmod(filePath, '777')));
 
   await fs.ensureSymlink(folderName, pathToSymLink);
   await fs.rmdir(extractFolderPath);
 }
 
 function loadPackageDb(meteorInstall) {
-  // TODO: where does v2.0.1 come from? Maybe just grab the first folder?
+  // HACK: where does v2.0.1 come from? Maybe just grab the first folder?
   const pathToDb = path.join(meteorInstall, 'package-metadata', 'v2.0.1', 'packages.data.db');
   return new sqlite3.Database(pathToDb);
 }
@@ -113,28 +111,6 @@ function getPackageDb(meteorInstall) {
     DBMap.set(meteorInstall, loadPackageDb(meteorInstall));
   }
   return DBMap.get(meteorInstall);
-}
-
-export async function getCorePackageVersion({
-  name,
-  meteorInstall,
-  meteorVersion,
-  appVersion = '2.5', // TODO: take this as an argument
-}) {
-  const db = getPackageDb(meteorInstall);
-  const actualVersion = meteorVersion.split('@').reverse()[0];
-
-  const requestedReleaseObject = await getOne(db, `SELECT * FROM releaseVersions WHERE track="METEOR" AND version IN ('${actualVersion.split(' || ').join("', '")}')`);
-  const appReleaseObject = await getOne(db, `SELECT * FROM releaseVersions WHERE track="METEOR" AND version='${appVersion}'`);
-  const requestedContent = JSON.parse(requestedReleaseObject.content);
-  const appContent = JSON.parse(appReleaseObject.content);
-  if (!appContent.packages[name]) {
-    // it seems that if a package is not "core" in the "current" version of meteor, then calls to api.versionsFrom
-    // no longer enforce a specific version. You can see this with meteorhacks:kadira
-    // which api.versionsFrom(1.10) and api.uses(jquery) - this should enforce jquery@1.11.3_2 - but it doesnt
-    return undefined;
-  }
-  return requestedContent.packages[name];
 }
 
 export async function getPackageDependencies({
@@ -209,7 +185,7 @@ export default async function ensureLocalPackage({
       versionToUse = versions.slice(-1)[0];
     }
     if (!versionToUse) {
-      // TODO: this is probably wrong since we're sorting a string - but it also shouldn't be required any more. Maybe we should just throw an error
+      // HACK: this is probably wrong since we're sorting a string - but it also shouldn't be required any more. Maybe we should just throw an error
       versionToUse = allVersions.slice(-1)[0];
       if (!versionToUse) {
         throw new Error(`Package: ${name} does not exist`);
@@ -237,5 +213,3 @@ export default async function ensureLocalPackage({
     return versionToUse;
   });
 }
-
-// getCorePackageVersion({ meteorInstall: '/home/vagrant/share/meteor/.meteor/', meteorVersion: '1.10' }).then(console.log)

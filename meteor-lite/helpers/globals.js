@@ -8,7 +8,7 @@ import fsPromises from 'fs/promises';
 import { attachComments } from 'estree-util-attach-comments';
 import { parse, print } from 'recast';
 import { windowGlobals } from './window-globals.js';
-import { nodeNameToMeteorName } from './helpers.js';
+import { meteorNameToNodeName, nodeNameToMeteorName } from './helpers.js';
 import { getImportTreeForFile, resolveFile } from './imports.js';
 import { warn } from './log.js';
 
@@ -57,7 +57,7 @@ export function parseContentsToAST(contents, {
       try {
         const ret = parseContentsToAST(contents, { attachComments: shouldAttachComments, loose, file, raw: true });
         if (file && !warnedAboutRecast.has(file)) {
-          // TODO: way too noisy
+          // this was too noisy - but if we move to an event emitter might be useful
           // warn(`${file || 'unknown file'} couldn't be parsed with recast, the structure and comments will possibly be lost`);
           warnedAboutRecast.add(file);
         }
@@ -82,7 +82,7 @@ export function astToCode(ast) {
     // sometimes recast generates code that can't be parsed - something wrong with what we're doing + comments.
     // An exampel is qualia:core/lib/helpers.js where a comment is bumped *down* a line and converted to a leading comment
     // which effectively comments out a closing brace
-    // TODO: remove this, it's so horrible.
+    // HACK: remove this, it's so horrible.
     parseContentsToAST(code);
     return code;
   }
@@ -167,7 +167,6 @@ export async function replaceGlobalsInFile(
       }
     }
     else if (findArchForGlobal(global) && !packageGlobalsSet.has(global)) {
-      // TODO: this is weird
       from = findArchForGlobal(global).get(global);
     }
     else {
@@ -350,7 +349,7 @@ const contextChangingTypes = new Set([
   'ArrowFunctionExpression',
   'FunctionExpression',
   'FunctionDeclaration',
-  // TODO: where else would `this` be valid?
+  // QUESTION: where else would `this` be valid?
 ]);
 function maybeRewriteGlobalThis(ast, debug) {
   let ret = false;
@@ -376,21 +375,20 @@ function maybeRewriteGlobalThis(ast, debug) {
   return ret;
 }
 
+const rewriteNodeTypes = new Set([
+  'ImportDeclaration',
+  'ExportNamedDeclaration',
+  'ExportAllDeclaration',
+]);
 function maybeRewriteImportsOrExports(ast, debug) {
-  // TODO export from
   let ret = false;
   walk(ast, {
     enter(node) {
-      if (node.type === 'ImportDeclaration' && node.source.value.startsWith('meteor/')) {
+      if (rewriteNodeTypes.has(node.type) && node.source?.value && node.source.value.startsWith('meteor/')) {
         ret = true;
-        if (node.source.value.includes(':')) {
-          node.source.value = `@${node.source.value.replace('meteor/', '').split(':').join('/')}`;
-          node.source.raw = `'${node.source.value}'`;
-        }
-        else {
-          node.source.value = `@${node.source.value}`;
-          node.source.raw = `'${node.source.value}'`;
-        }
+        const nodeName = meteorNameToNodeName(node.source.value.replace('meteor/', ''));
+        node.source.value = nodeName;
+        node.source.raw = `'${node.source.value}'`;
       }
     },
   });
@@ -818,7 +816,6 @@ export async function getPackageGlobals(isCommon, outputFolder, archsForFiles) {
   return { all: map, assigned: assignedMap };
 }
 
-// TODO - do a better job figuring out server/client only imports (static analysis?)
 function replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet, file) {
   if (!isMultiArch) {
     // if we're not multi-arch, don't bother rewriting.

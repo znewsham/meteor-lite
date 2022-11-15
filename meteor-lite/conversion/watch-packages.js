@@ -1,7 +1,6 @@
 import fsPromises from 'fs/promises';
 import debounce from 'debounce';
 
-// TODO: move into the job?
 class PackageWatcher {
   #job;
 

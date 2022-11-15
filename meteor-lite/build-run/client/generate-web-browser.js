@@ -58,7 +58,6 @@ async function buildClient({
       '__package_globals.require': 'require',
     },
     plugins: [
-      // TODO: swap to holistic cache implementation
       blazePlugin(cache),
       lessPlugin(cache),
       stubsPlugin(buildRoot),

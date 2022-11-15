@@ -46,6 +46,8 @@ program
   .option('-w, --watch', 'build and watch the pacakges and .common directory?')
   .option('-m, --meteor <meteorInstall>', 'path to the meteor install')
   .option('-o, --outputDirectory <outputDirectory>', 'the output directory')
+  .option('--inspect [inspect]', 'inspect the process')
+  .option('--inspect-brk [inspectBrk]', 'inspect the process')
   .option('--outputLocalDirectory <outputLocalDirectory>', 'the output directory for packages in the packages directory')
   .option('--outputSharedDirectory <outputSharedDirectory>', 'the output directory for packages in the METEOR_PACKAGE_DIRS directory')
   .action(async ({
@@ -54,6 +56,8 @@ program
     outputDirectory,
     outputLocalDirectory,
     meteor,
+    inspectBrk,
+    inspect,
   }) => {
     let job;
     if (buildAndWatchPackages) {
@@ -71,7 +75,14 @@ program
       });
       console.log('build complete');
     }
-    await run(DefaultArchs, { buildAndWatchPackages, job });
+    await run(
+      DefaultArchs,
+      {
+        buildAndWatchPackages,
+        job,
+        inspectBrk,
+        inspect,
+      });
   });
 
 program
@@ -197,9 +208,13 @@ program
 
 program
   .command('write-peer-dependencies')
+  .requiredOption('-o, --outputDirs <outputDirs...>', 'the local output directories (e.g., npm-packages')
   // .option('-n, --name <name>', 'the name of the local module to use', 'meteor-peer-dependencies')
-  .action(async () => {
-    await writePeerDependencies({ name: 'meteor-peer-dependencies' });
+  .action(async ({ outputDirs = [] }) => {
+    await writePeerDependencies({
+      name: 'meteor-peer-dependencies',
+      localDirs: outputDirs,
+    });
   });
 
 program

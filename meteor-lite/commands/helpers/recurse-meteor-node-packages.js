@@ -7,9 +7,10 @@ import { getNpmRc, registryForPackage } from '../../helpers/ensure-npm-rc';
 export default async function recurseMeteorNodePackages(
   startingList,
   recursionFunction,
-  initialState = {},
-  // TODO: pass this in
-  localDirs = ['./npm-packages-local', './npm-packages-shared', './npm-packages'],
+  {
+    initialState = {},
+    localDirs = [],
+  },
 ) {
   const packageJsonMap = new Map();
   let nextPackages = startingList.slice(0);
