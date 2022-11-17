@@ -10,6 +10,7 @@ import maybeRewriteGlobalThis from './ast/rewrite/global-this.js';
 import maybeRewriteAwait from './ast/rewrite/await.js';
 import { astToCode, maybeCleanAST, parseContentsToAST } from './ast/index.js';
 import rewriteASTForPackageGlobals from './ast/rewrite/package-globals.js';
+import replaceImportsInAst from './ast/rewrite/replace-imports';
 
 export const generateOptions = {
   comments: true,
@@ -33,6 +34,8 @@ const commonJSBlacklist = new Set([
   'require',
 ]);
 
+// QUESTION: if we ever have a package that exports a global with the same name as a "global" - what do we do, see the deletion below as an example
+// it's possible we don't need this anymore due to how we detect package global usage
 const globalBlacklist = new Set([
   'revalify',
   'window',
@@ -47,7 +50,7 @@ const globalBlacklist = new Set([
   ...getOwnPropertyNames(),
 ]);
 
-globalBlacklist.delete('global'); // meteor does some fuckery here
+globalBlacklist.delete('global'); // the meteor package does weirdness here - it exports a global called global
 
 // super gnarly bandaid solution, just to test if the "globals are only package globals if they're assigned"
 // we treat all these as package globals.
@@ -61,8 +64,73 @@ export function rewriteFileForPackageGlobals(contents, _packageGlobalsSet, isMul
       attachComments: true,
     },
   );
-  rewriteASTForPackageGlobals(ast, packageGlobalsSet, isMultiArch, serverOnlyImportsSet, file);
+  replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet, file);
+  rewriteASTForPackageGlobals(ast, packageGlobalsSet);
   return astToCode(ast);
+}
+
+function getImportStr(
+  imports,
+  isMultiArch,
+  outputFolder,
+  file,
+  isCommon,
+  packageGetter,
+  archs,
+) {
+  return Array.from(imports.entries())
+    .map(([from, fromImports]) => {
+      // find the correct path to the __globals.js file in the case that a folder in a package is trying to use a package global
+      let fromToUse = from;
+      if (fromToUse === '__globals.js') {
+        const relative = path.resolve(file).replace(outputFolder, '').split('/').slice(2)
+          .map(() => '..')
+          .join('/');
+        fromToUse = `./${relative}${relative && '/'}__globals.js`;
+      }
+      return [fromToUse, fromImports];
+    })
+    .map(([from, fromImports], i) => {
+      if (from.endsWith('__globals.js')) {
+        if (isCommon) {
+          return `const __package_globals__ = require("${from}");`;
+        }
+
+        // get the relative path of __globals.js
+        return `import __package_globals__ from "${from}";`;
+      }
+      const meteorName = nodeNameToMeteorName(from);
+      const meteorPackage = packageGetter(meteorName);
+      if (!meteorPackage) {
+        throw new Error(`${meteorName} does not exist`);
+      }
+      if (isCommon) {
+        return `const { ${Array.from(fromImports).join(', ')} } = require("${from}");`;
+      }
+      if (meteorName && meteorPackage.isCommon()) {
+        return [
+          `import __import__${i}__ from "${from}";`,
+          `const { ${Array.from(fromImports).join(', ')} } = __import__${i}__;`,
+        ].join('\n');
+      }
+
+      let useGnarly = false;
+      if (isMultiArch && !from.match(/^[./]/)) {
+        if (!meteorPackage) {
+          throw new Error(`importing from missing package ${from}`);
+        }
+        const exportsForPackageForArchs = Array.from(archs).map((arch) => meteorPackage.getExportedVars(arch));
+        const fromImportsArray = Array.from(fromImports);
+        useGnarly = !fromImportsArray.every((importName) => exportsForPackageForArchs.every((exportsForPackageForArch) => exportsForPackageForArch.includes(importName)))
+      }
+      if (useGnarly) {
+        return [
+          `import * as __import__${i}__ from "${from}";`,
+          `const { ${Array.from(fromImports).join(', ')} } = __import__${i}__;`,
+        ].join('\n');
+      }
+      return `import { ${Array.from(fromImports).join(', ')} } from "${from}";`;
+    }).join('\n');
 }
 
 export async function replaceGlobalsInFile(
@@ -111,68 +179,15 @@ export async function replaceGlobalsInFile(
   });
   if (imports.size) {
     const fileContents = (await fsPromises.readFile(file)).toString();
-    const importStr = Array.from(imports.entries())
-      .map(([from, fromImports]) => {
-        let fromToUse = from;
-        if (fromToUse === '__globals.js') {
-          const relative = path.resolve(file).replace(outputFolder, '').split('/').slice(2)
-            .map(() => '..')
-            .join('/');
-          fromToUse = `./${relative}${relative && '/'}__globals.js`;
-        }
-        return [fromToUse, fromImports];
-      })
-      .map(([from, fromImports], i) => {
-        if (from.endsWith('__globals.js')) {
-          if (isCommon) {
-            return `const __package_globals__ = require("${from}");`;
-          }
-
-          // get the relative path of __globals.js
-          return [
-            `import __package_globals__ from "${from}";`,
-            // MUST be var or let.
-            // `var { ${Array.from(fromImports).join(',')} } = __package_globals__;`,
-          ].join('\n');
-        }
-        const meteorName = nodeNameToMeteorName(from);
-        // if this is a common JS module, we don't allow import of @meteor/meteor (hopefully just required for the global)
-        // if you're importing something else...we're gonna have to fix by hand.
-        if (!packageGetter(meteorName)) {
-          throw new Error(`${meteorName} does not exist`);
-        }
-        if (isCommon) {
-          if (packageGetter(meteorName).isCommon()) {
-            return `const { ${Array.from(fromImports).join(', ')} } = require("${from}");`;
-          }
-
-          return `const { ${Array.from(fromImports).join(', ')} } = require("${from}");`;
-        }
-        if (meteorName && packageGetter(meteorName).isCommon()) {
-          return [
-            `import __import__${i}__ from "${from}";`,
-            `const { ${Array.from(fromImports).join(', ')} } = __import__${i}__;`,
-          ].join('\n');
-        }
-
-        let useGnarly = false;
-        if (isMultiArch && !from.match(/^[./]/)) {
-          const meteorPackage = packageGetter(meteorName);
-          if (!meteorPackage) {
-            throw new Error(`importing from missing package ${from}`);
-          }
-          const exportsForPackageForArchs = Array.from(archs).map((arch) => meteorPackage.getExportedVars(arch));
-          const fromImportsArray = Array.from(fromImports);
-          useGnarly = !fromImportsArray.every((importName) => exportsForPackageForArchs.every((exportsForPackageForArch) => exportsForPackageForArch.includes(importName)))
-        }
-        if (useGnarly) {
-          return [
-            `import * as __import__${i}__ from "${from}";`,
-            `const { ${Array.from(fromImports).join(', ')} } = __import__${i}__;`,
-          ].join('\n');
-        }
-        return `import { ${Array.from(fromImports).join(', ')} } from "${from}";`;
-      }).join('\n');
+    const importStr = getImportStr(
+      imports,
+      isMultiArch,
+      outputFolder,
+      file,
+      isCommon,
+      packageGetter,
+      archs,
+    );
     try {
       await fsPromises.writeFile(
         file,
@@ -258,6 +273,26 @@ export async function getImportTreeForPackageAndClean(
   );
 }
 
+function getGlobalsFromScope(isCommon, currentScope, writeOnly = false) {
+  return new Set([
+    ...currentScope.implicit.variables.map((entry) => entry.identifier.name),
+    ...currentScope.implicit.left
+      .filter((entry) => entry.identifier
+        && entry.from.type !== 'class'
+        && entry.identifier.type === 'Identifier'
+        && (!writeOnly || entry.writeExpr))
+      .map((entry) => entry.identifier.name),
+  ].filter((name) => {
+    if (globalBlacklist.has(name)) {
+      return false;
+    }
+    if (isCommon && commonJSBlacklist.has(name)) {
+      return false;
+    }
+    return true;
+  }));
+}
+
 async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
   const fileContents = (await fsPromises.readFile(file)).toString();
   const ast = parseContentsToAST(
@@ -282,36 +317,8 @@ async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
     nodejsScope: true,
   });
   const currentScope = scopeManager.acquire(ast);
-  const all = new Set([
-    ...currentScope.implicit.variables.map((entry) => entry.identifier.name),
-    ...currentScope.implicit.left.filter((entry) => entry.identifier
-      && entry.from.type !== 'class'
-      && entry.identifier.type === 'Identifier').map((entry) => entry.identifier.name),
-  ].filter((name) => {
-    if (globalBlacklist.has(name)) {
-      return false;
-    }
-    if (isCommon && commonJSBlacklist.has(name)) {
-      return false;
-    }
-    return true;
-  }));
-
-  const assigned = new Set([
-    ...currentScope.implicit.variables.map((entry) => entry.identifier.name),
-    ...currentScope.implicit.left.filter((entry) => entry.identifier
-      && entry.from.type !== 'class'
-      && entry.identifier.type === 'Identifier'
-      && entry.writeExpr).map((entry) => entry.identifier.name),
-  ].filter((name) => {
-    if (globalBlacklist.has(name)) {
-      return false;
-    }
-    if (isCommon && commonJSBlacklist.has(name)) {
-      return false;
-    }
-    return true;
-  }));
+  const all = getGlobalsFromScope(isCommon, currentScope);
+  const assigned = getGlobalsFromScope(isCommon, currentScope, true);
   map.set(file, all);
   assignedMap.set(file, assigned);
   if (hasRewrittenImportsOrExports || hasRewrittenRequires || hasRewrittenAwait || hasGlobalThis) {

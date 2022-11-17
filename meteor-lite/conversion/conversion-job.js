@@ -184,7 +184,6 @@ export default class ConversionJob {
 
     // a special package that does nothing. Useful for optional imports/exports
     cleanNames.push('noop@0.0.1');
-
     // first convert all the non-test packages so we know they're done, then we do all the test packages.
     // this should help with circular dependencies (a little)
     await Promise.all(cleanNames.map(async (nameAndMaybeVersion) => this.#convertPackage(nameAndMaybeVersion)));

@@ -1,6 +1,6 @@
 import { walk } from 'estree-walker';
 
-export default function maybeRewriteAwait(ast, multiArch, debug) {
+export default function maybeRewriteAwait(ast, multiArch) {
   let ret = false;
   walk(ast, {
     leave(node) {

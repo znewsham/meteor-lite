@@ -8,9 +8,9 @@ import { generate } from 'astring';
 import { resolveFile } from '../imports.js';
 import { acornOptions } from '../acorn-options.js';
 import rewriteExports from './rewrite/exports.js';
+import clean from './rewrite/clean.js';
 
 const warnedAboutRecast = new Set();
-
 export function parseContentsToAST(contents, {
   attachComments: shouldAttachComments = false,
   loose = false,
@@ -36,10 +36,18 @@ export function parseContentsToAST(contents, {
         parse(src) {
           return parser.parse(src, {
             ...acornOptions,
+            ...(shouldAttachComments && { onComment: comments }),
           });
         },
       },
     });
+    // at a glance it seems like you shouldn't need this - but that's only because recast caches nodes
+    // e.g., if a node is unchanged, it prints it's exact representation
+    // so if a node is unchanged it's comments remain, but we want to keep *all* comments
+    // it also isn't clear at what level a change will impact comments - best to attach them manually if possible
+    if (shouldAttachComments) {
+      attachComments(ast, comments);
+    }
     return ast.program;
   }
   catch (error) {
@@ -177,110 +185,20 @@ async function getCleanAST(file) {
 }
 
 export async function maybeCleanAST(file, isCommon, exportedMap) {
-  if (!file.endsWith('.js')) {
+  if (!file.endsWith('.js') && !file.endsWith('.ts')) {
     const resolvedFile = await resolveFile(file);
-    if (!resolvedFile.endsWith('.js')) { // TODO: ts
-      return;
+    if (!resolvedFile.endsWith('.js') && !resolvedFile.endsWith('.ts')) {
+      throw new Error(`tried to parse a non JS file ${file} resolved to ${resolvedFile}`);
     }
   }
   const { ast, requiresCleaning } = await getCleanAST(file);
-  const importEntries = new Map();
-  const importReplacementPrefix = '_import_require_';
-  let blockDepth = 0;
-  let hasImports = false;
-  let hasRequires = false;
-  let usesExports = false;
-  let usesUncleanExports = false;
-  if (!isCommon) {
-    walk(ast, {
-      leave(node) {
-        if (node.type === 'BlockStatement') {
-          blockDepth -= 1;
-        }
-      },
-      enter(node) {
-        if (node.type === 'AssignmentExpression') {
-          if (
-            node.left.type === 'MemberExpression'
-            && (
-              node.left.object.name === 'exports'
-              || (node.left.object.type === 'MemberExpression' && node.left.object.object.name === 'module' && node.left.object.property.name === 'exports')
-            )
-          ) {
-            if (!usesUncleanExports) {
-              usesUncleanExports = blockDepth !== 0;
-            }
-            usesExports = true;
-          }
-        }
-        if (node.type === 'BlockStatement') {
-          blockDepth += 1;
-        }
-        if (node.type === 'ImportDeclaration') {
-          hasImports = true;
-        }
-        if (
-          node.type === 'CallExpression'
-          && node.callee.type === 'Identifier'
-          && node.callee.name === 'require'
-          && node.arguments.length === 1
-          && node.arguments[0].type === 'Literal'
-        ) {
-          if (blockDepth !== 0 || isCommon) {
-            hasRequires = true;
-            return;
-          }
-          const importPath = node.arguments[0].value;
-          let importEntry;
-          if (importEntries.has(importPath)) {
-            importEntry = importEntries.get(importPath);
-          }
-          else {
-            const name = `${importReplacementPrefix}${importEntries.size + 1}`;
-            importEntry = {
-              name,
-              node: {
-                type: 'ImportDeclaration',
-                source: {
-                  type: 'Literal',
-                  value: node.arguments[0].value,
-                  raw: node.arguments[0].raw,
-                },
-                specifiers: [{
-                  type: 'ImportNamespaceSpecifier',
-                  local: {
-                    type: 'Identifier',
-                    name,
-                  },
-                }],
-              },
-            };
-            importEntries.set(importPath, importEntry);
-          }
-          // TODO: if the parent is a body node, this isn't necessary
-          // e.g., require(x) can be entirely ommitted y = require(x) must be rewritten
-          node.__rewritten = true;
-          node.type = 'LogicalExpression';
-          node.operator = '||';
-          node.right = {
-            type: 'Identifier',
-            name: importEntry.name,
-          };
-          node.left = {
-            type: 'MemberExpression',
-            object: {
-              type: 'Identifier',
-              name: importEntry.name,
-            },
-            property: {
-              type: 'Identifier',
-              name: 'default',
-            },
-          };
-        }
-      },
-    });
-  }
+  const {
+    hasImports = false,
+    hasRequires = false,
+    usesExports = false,
+    usesUncleanExports = false,
+    importEntries = new Set(),
+  } = isCommon ? {} : clean(ast);
   let exported;
   let importAstBodyIndex = 0;
   if (usesExports && !hasRequires && !usesUncleanExports) {
@@ -289,13 +207,11 @@ export async function maybeCleanAST(file, isCommon, exportedMap) {
   }
   if (requiresCleaning || importEntries.size || exported?.length) {
     importEntries.forEach(({ node }) => {
-      ast.body.splice(importAstBodyIndex++, 0, node);
+      importAstBodyIndex += 1;
+      ast.body.splice(importAstBodyIndex, 0, node);
     });
     if (hasRequires && hasImports) {
       throw new Error(`Imports and requires in ${file} (un-fixable)`);
-    }
-    if (hasRequires && importEntries.size) {
-      //throw new Error(`Imports and requires in ${file} (fixable)`);
     }
     await fsPromises.writeFile(file, astToCode(ast));
   }

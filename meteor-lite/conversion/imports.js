@@ -1,8 +1,7 @@
 import fsPromises from 'fs/promises';
-import * as acorn from 'acorn';
 import path from 'path';
 import { pathExists } from 'fs-extra';
-import { acornOptions } from './acorn-options.js';
+import { error as errorLog } from '../helpers/log';
 
 export async function resolveFile(actualFile) {
   if (await pathExists(`${actualFile}.js`)) {
@@ -16,6 +15,18 @@ export async function resolveFile(actualFile) {
     return actualFile;
   }
   return false;
+}
+
+const ImportExportTypes = new Set([
+  'ExportNamedDeclaration',
+  'ExportDefaultDeclaration',
+  'ExportAllDeclaration',
+  'ImportDeclaration',
+]);
+
+// we only care about relative paths - we're just trying to load the package tree
+function nodeLoadsFile(node) {
+  return ImportExportTypes.has(node.type) && node.source && node.source.value.match(/^\.\.?\//);
 }
 
 export async function getImportTreeForFile(outputFolder, absoluteFile, arch, archsForFilesMap, ast) {
@@ -34,20 +45,10 @@ export async function getImportTreeForFile(outputFolder, absoluteFile, arch, arc
     else {
       archsForFilesMap.get(baseFile).add(arch);
     }
-    const contents = (await fsPromises.readFile(actualFile)).toString();
-    if (!ast) {
-      ast = acorn.parse(
-        contents,
-        acornOptions,
-      );
-    }
 
     const toFind = new Set();
     ast.body.forEach((node) => {
-      if ((node.type === 'ExportNamedDeclaration' || node.type === 'ExportDefaultDeclaration' || node.type === 'ExportAllDeclaration') && node.source && node.source.value.match(/^\.\.?\//)) {
-        toFind.add(node.source.value);
-      }
-      if (node.type === 'ImportDeclaration' && node.source.value.match(/^\.\.?\//)) {
+      if (nodeLoadsFile(node)) {
         toFind.add(node.source.value);
       }
     });
@@ -57,7 +58,7 @@ export async function getImportTreeForFile(outputFolder, absoluteFile, arch, arc
     }));
   }
   catch (e) {
-    console.error(`problem with file ${absoluteFile} ${actualFile}`);
+    errorLog(`problem with file ${absoluteFile} ${actualFile}`);
     throw e;
   }
 }

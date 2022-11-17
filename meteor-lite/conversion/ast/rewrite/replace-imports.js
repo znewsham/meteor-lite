@@ -6,7 +6,7 @@ const SERVER_ONLY_IMPORTS = new Set([
   'util',
 ]);
 
-export default function replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet, file) {
+export default function replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet) {
   if (!isMultiArch) {
     // if we're not multi-arch, don't bother rewriting.
     return;
@@ -16,15 +16,22 @@ export default function replaceImportsInAst(ast, isMultiArch, serverOnlyImportsS
       if (node.type === 'ImportDeclaration') {
         const rootImportSource = node.source.value.split('/')[0];
         if (SERVER_ONLY_IMPORTS.has(rootImportSource)) {
-          node.__rewritten = true;
           if (rootImportSource !== node.source.value) {
             serverOnlyImportsSet.add(`${rootImportSource}/*`);
           }
           else {
             serverOnlyImportsSet.add(rootImportSource);
           }
-          node.source.value = `#${node.source.value}`;
-          node.source.raw = `'${node.source.value}'`;
+          const quote = node.source.raw[0];
+          this.replace({
+            type: 'ImportDeclaration',
+            specifiers: node.specifiers,
+            source: {
+              type: 'Literal',
+              value: `#${node.source.value}`,
+              raw: `${quote}${node.source.value}${quote}`,
+            },
+          });
         }
       }
     },

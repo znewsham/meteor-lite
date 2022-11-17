@@ -6,7 +6,7 @@ const contextChangingTypes = new Set([
   'FunctionDeclaration',
   // QUESTION: where else would `this` be valid?
 ]);
-export default function maybeRewriteGlobalThis(ast, debug) {
+export default function maybeRewriteGlobalThis(ast) {
   let ret = false;
   const currentContext = [ast];
   walk(ast, {
@@ -15,9 +15,10 @@ export default function maybeRewriteGlobalThis(ast, debug) {
         currentContext.push(node);
       }
       if (node.type === 'ThisExpression' && currentContext.length === 1) {
-        node.__rewritten = true;
-        node.type = 'Identifier';
-        node.name = 'globalThis';
+        this.replace({
+          type: 'Identifier',
+          name: 'globalThis',
+        });
         ret = true;
       }
     },

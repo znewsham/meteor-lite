@@ -1,27 +1,26 @@
 import { walk } from 'estree-walker';
+import { meteorNameToNodeName } from '../../../helpers/helpers';
+import { isRequire } from './helpers';
 
-export default function maybeRewriteRequire(ast, debug) {
+
+export default function maybeRewriteRequire(ast) {
   let ret = false;
   walk(ast, {
-    enter(node) {
-      // require('meteor/whatever')
+    enter(node, parent) {
       if (
-        node.type === 'CallExpression'
-        && node.callee.type === 'Identifier'
-        && node.callee.name === 'require'
-        && node.arguments.length === 1
-        && node.arguments[0].type === 'Literal'
-        && node.arguments[0].value.startsWith('meteor/')
+        // require('meteor/whatever')
+        node.type === 'Literal'
+        && isRequire(parent)
+        && node.value.startsWith('meteor/')
       ) {
         ret = true;
-        node.__rewritten = true;
-        if (node.arguments[0].value.includes(':')) {
-          node.arguments[0].value = `@${node.arguments[0].value.replace('meteor/', '').split(':').join('/')}`;
-        }
-        else {
-          node.arguments[0].value = `@${node.arguments[0].value}`;
-        }
-        node.arguments[0].raw = `"${node.arguments[0].value}"`;
+        const nodeName = meteorNameToNodeName(node.value.replace('meteor/', ''));
+        const quote = node.raw[0];
+        this.replace({
+          type: 'Literal',
+          value: nodeName,
+          raw: `${quote}${nodeName}${quote}`,
+        });
       }
     },
   });

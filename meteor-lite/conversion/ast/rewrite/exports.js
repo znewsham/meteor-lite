@@ -1,4 +1,5 @@
 import { walk } from 'estree-walker';
+import { isExport, isModuleExport } from './helpers';
 
 export default function rewriteExports(ast) {
   const exported = [];
@@ -8,56 +9,47 @@ export default function rewriteExports(ast) {
         return;
       }
       if (node.type === 'AssignmentExpression') {
-        if (
-          node.left.type === 'MemberExpression'
-          && node.left.object.name === 'module'
-          && node.left.property.name === 'exports'
-        ) {
-          node.__rewritten = true;
-          node.type = 'ExportDefaultDeclaration';
-          node.declaration = node.right;
+        if (isModuleExport(node.left)) {
+          this.replace({
+            type: 'ExportDefaultDeclaration',
+            declaration: node.right,
+          });
           exported.push(null);
         }
-        else if (
-          node.left.type === 'MemberExpression'
-          && (
-            node.left.object.name === 'exports'
-            || (
-              node.left.object.type === 'MemberExpression'
-              && node.left.object.object.name === 'module'
-              && node.left.object.property.name === 'exports'
-            )
-          )
-        ) {
-          node.__rewritten = true;
-          node.type = 'ExportNamedDeclaration';
+        else if (isExport(node.left) || (node.left.object && isModuleExport(node.left.object))) {
           exported.push(node.left.property.name);
           if (node.left.property.name === node.right.name) {
-            node.specifiers = [{
-              type: 'ExportSpecifier',
-              exported: {
-                type: 'Identifier',
-                name: node.right.name,
-              },
-              local: {
-                type: 'Identifier',
-                name: node.right.name,
-              },
-            }];
+            this.replace({
+              type: 'ExportNamedDeclaration',
+              specifiers: [{
+                type: 'ExportSpecifier',
+                exported: {
+                  type: 'Identifier',
+                  name: node.right.name,
+                },
+                local: {
+                  type: 'Identifier',
+                  name: node.right.name,
+                },
+              }],
+            });
           }
           else {
-            node.declaration = {
-              type: 'VariableDeclaration',
-              kind: 'var',
-              declarations: [{
-                type: 'VariableDeclarator',
-                id: {
-                  type: 'Identifier',
-                  name: node.left.property.name,
-                },
-                init: node.right,
-              }],
-            };
+            this.replace({
+              type: 'ExportNamedDeclaration',
+              declaration: {
+                type: 'VariableDeclaration',
+                kind: 'var',
+                declarations: [{
+                  type: 'VariableDeclarator',
+                  id: {
+                    type: 'Identifier',
+                    name: node.left.property.name,
+                  },
+                  init: node.right,
+                }],
+              },
+            });
           }
         }
       }

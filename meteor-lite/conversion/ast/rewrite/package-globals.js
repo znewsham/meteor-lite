@@ -1,8 +1,36 @@
-import { walk } from 'estree-walker';
 import { analyze as analyzeScope } from 'escope';
-import replaceImportsInAst from './replace-imports';
+import { walk } from 'estree-walker';
 
-export default function rewriteASTForPackageGlobals(ast, packageGlobalsSet, isMultiArch, serverOnlyImportsSet, file) {
+function isVariableDeclaration(node, parent) {
+  return parent.type === 'VariableDeclarator' && parent.id === node;
+}
+
+function isMemberProperty(node, parent) {
+  return parent.type === 'MemberExpression' && parent.property === node && !parent.computed;
+}
+
+// class { alsoGlobalName = whatever } and { alsoGlobalName: whatever }
+// but not class { [alsoGlobalName] = whatever }, { [alsoGlobalName]: whatever } or { whatever: alsoGlobalName }
+function isProperty(node, parent) {
+  return (parent.type === 'Property' || parent.type === 'PropertyDefinition') && parent.key === node && !parent.computed;
+}
+
+function isFunctionDeclarationOrExpression(node, parent) {
+  return (parent.type === 'FunctionExpression' || parent.type === 'FunctionDeclaration')
+    && (parent.id === node || parent.params.includes(node));
+}
+
+function isResolvedThroughScope(node, currentScope) {
+  return currentScope.set.has(node.name)
+    || currentScope.through.find((ref) => ref.resolved?.name === node.name);
+}
+
+const IgnoredParentTypes = new Set([
+  'CatchClause',
+  'ObjectPattern',
+]);
+
+export default function rewriteASTForPackageGlobals(ast, packageGlobalsSet) {
   const scopeManager = analyzeScope(ast, {
     ecmaVersion: 6,
     sourceType: 'module',
@@ -13,7 +41,7 @@ export default function rewriteASTForPackageGlobals(ast, packageGlobalsSet, isMu
   let currentScope = scopeManager.acquire(ast);
   const stack = [];
   const acquired = new Set();
-  replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet, file);
+  const parentsToRewrite = new Set();
   walk(ast, {
     enter(node) {
       stack.push(node);
@@ -24,6 +52,15 @@ export default function rewriteASTForPackageGlobals(ast, packageGlobalsSet, isMu
     },
     leave(node, parent) {
       stack.pop();
+      if (parentsToRewrite.has(node)) {
+        this.replace({
+          ...node,
+          key: JSON.parse(JSON.stringify(node.key)),
+          shorthand: false,
+        });
+        parentsToRewrite.delete(node);
+        return;
+      }
       if (acquired.has(node)) {
         acquired.delete(node);
         currentScope = currentScope.upper; // set to parent scope
@@ -31,50 +68,46 @@ export default function rewriteASTForPackageGlobals(ast, packageGlobalsSet, isMu
       if (
         node.type !== 'Identifier'
         || !packageGlobalsSet.has(node.name)
-        || currentScope.set.has(node.name)
-        || currentScope.through.find((ref) => ref.resolved?.name === node.name)
+        || isResolvedThroughScope(node, currentScope)
       ) {
         return;
       }
-
       if (parent.type === 'Property' && parent.shorthand && parent.value === node) {
-        parent.key = JSON.parse(JSON.stringify(parent.key));
-        parent.shorthand = false;
-        node.__rewritten = true;
-        parent.__rewritten = true;
-        node.type = 'MemberExpression';
-        node.object = {
-          type: 'Identifier',
-          name: '__package_globals__',
-        };
-        node.property = {
-          type: 'Identifier',
-          name: node.name,
-        };
+        parentsToRewrite.add(parent);
+        this.replace({
+          type: 'MemberExpression',
+          object: {
+            type: 'Identifier',
+            name: '__package_globals__',
+          },
+          property: {
+            type: 'Identifier',
+            name: node.name,
+          },
+        });
+        return;
+      }
+      if (
+        IgnoredParentTypes.has(parent.type)
+        || isVariableDeclaration(node, parent)
+        || isMemberProperty(node, parent)
+        || isProperty(node, parent)
+        || isFunctionDeclarationOrExpression(node, parent)
+      ) {
         return;
       }
       // simple rewrite
-      if (
-        (parent.type !== 'VariableDeclarator' || parent.id !== node)
-        && (parent.type !== 'MemberExpression' || parent.object === node || parent.computed === true)
-        && (parent.type !== 'Property' || parent.value === node)
-        && parent.type !== 'CatchClause'
-        && parent.type !== 'ObjectPattern'
-        && parent.type !== 'PropertyDefinition'
-        && (parent.type !== 'FunctionExpression' || node === parent.left)
-        && (parent.type !== 'FunctionDeclaration' || node === parent.id)
-      ) {
-        node.__rewritten = true;
-        node.type = 'MemberExpression';
-        node.object = {
+      this.replace({
+        type: 'MemberExpression',
+        object: {
           type: 'Identifier',
           name: '__package_globals__',
-        };
-        node.property = {
+        },
+        property: {
           type: 'Identifier',
           name: node.name,
-        };
-      }
+        },
+      });
     },
   });
 }
