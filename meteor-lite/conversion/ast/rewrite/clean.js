@@ -13,23 +13,25 @@ export default function clean(ast) {
 
   walk(ast, {
     leave(node) {
-      if (node.type === 'BlockStatement') {
+      // probably others but we're catching for if (x) module.exports = whatever
+      if (node.type === 'BlockStatement' || node.type === 'IfStatement') {
         blockDepth -= 1;
       }
     },
-    enter(node) {
+    enter(node, parent) {
       if (node.type === 'AssignmentExpression') {
         if (
           isExport(node.left)
+          || isModuleExport(node.left)
           || (node.left.object && isModuleExport(node.left.object))
         ) {
           if (!usesUncleanExports) {
-            usesUncleanExports = blockDepth !== 0;
+            usesUncleanExports = blockDepth !== 0 || parent.type === '';
           }
           usesExports = true;
         }
       }
-      if (node.type === 'BlockStatement') {
+      if (node.type === 'BlockStatement' || node.type === 'IfStatement') {
         blockDepth += 1;
       }
       if (node.type === 'ImportDeclaration') {

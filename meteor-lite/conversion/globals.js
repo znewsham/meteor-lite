@@ -56,18 +56,6 @@ globalBlacklist.delete('global'); // the meteor package does weirdness here - it
 // we treat all these as package globals.
 const BAD = new Set(['exports', 'module', 'require', 'Npm', 'Assets']);
 
-export function rewriteFileForPackageGlobals(contents, _packageGlobalsSet, isMultiArch, serverOnlyImportsSet, file) {
-  const packageGlobalsSet = _packageGlobalsSet || new Set();
-  const ast = parseContentsToAST(
-    contents,
-    {
-      attachComments: true,
-    },
-  );
-  replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet, file);
-  rewriteASTForPackageGlobals(ast, packageGlobalsSet);
-  return astToCode(ast);
-}
 
 function getImportStr(
   imports,
@@ -143,6 +131,7 @@ export async function replaceGlobalsInFile(
   archs,
   packageGlobalsSet,
   serverOnlyImportsSet,
+  ast,
 ) {
   const isMultiArch = archs?.size > 1;
   const archName = archs?.size === 1 ? Array.from(archs)[0] : undefined;
@@ -178,7 +167,6 @@ export async function replaceGlobalsInFile(
     }
   });
   if (imports.size) {
-    const fileContents = (await fsPromises.readFile(file)).toString();
     const importStr = getImportStr(
       imports,
       isMultiArch,
@@ -189,11 +177,13 @@ export async function replaceGlobalsInFile(
       archs,
     );
     try {
+      replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet, file);
+      rewriteASTForPackageGlobals(ast, imports.get('__globals.js') || new Set());
       await fsPromises.writeFile(
         file,
         [
           importStr,
-          rewriteFileForPackageGlobals(fileContents, imports.get('__globals.js'), isMultiArch, serverOnlyImportsSet, file),
+          astToCode(ast),
         ].join('\n'),
       );
     }
@@ -204,17 +194,26 @@ export async function replaceGlobalsInFile(
   }
 }
 
-async function maybeCleanAndGetImportTreeForSingleFile(outputFolder, file, arch, archsForFiles, isCommon, exportedMap, processedSet) {
-  if (processedSet.has(file)) {
+async function maybeCleanAndGetImportTreeForSingleFile(
+  baseFolder,
+  file,
+  arch,
+  archsForFiles,
+  isCommon,
+  exportedMap,
+  astForFiles,
+) {
+  const baseFile = file.replace(baseFolder, '.');
+  if (astForFiles.has(baseFile)) {
     return [];
   }
-  processedSet.add(file);
   if (file.endsWith('.html') || file.endsWith('.css')) {
     return [];
   }
-  const ast = await maybeCleanAST(file, isCommon, exportedMap);
+  const ast = await maybeCleanAST(baseFolder, file, isCommon, exportedMap);
+  astForFiles.set(baseFile, ast);
   const newFiles = await getImportTreeForFile(
-    outputFolder,
+    baseFolder,
     file,
     arch,
     archsForFiles,
@@ -230,8 +229,8 @@ async function maybeCleanAndGetImportTreeForArch(
   archsForFiles,
   isCommon,
   exportedMap,
+  astForFiles,
 ) {
-  const processedSet = new Set([]);
   const queue = [...entryPointsForArch];
   while (queue.length !== 0) {
     const items = queue.splice(0, queue.length);
@@ -248,7 +247,7 @@ async function maybeCleanAndGetImportTreeForArch(
         archsForFiles,
         isCommon,
         exportedMap,
-        processedSet,
+        astForFiles,
       );
       queue.push(...newFiles);
     }));
@@ -262,6 +261,7 @@ export async function getImportTreeForPackageAndClean(
   archsForFiles,
   isCommon,
   exportedMap,
+  astForFiles,
 ) {
   return maybeCleanAndGetImportTreeForArch(
     outputFolder,
@@ -270,6 +270,7 @@ export async function getImportTreeForPackageAndClean(
     archsForFiles,
     isCommon,
     exportedMap,
+    astForFiles,
   );
 }
 
@@ -293,21 +294,19 @@ function getGlobalsFromScope(isCommon, currentScope, writeOnly = false) {
   }));
 }
 
-async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
-  const fileContents = (await fsPromises.readFile(file)).toString();
-  const ast = parseContentsToAST(
-    fileContents,
-    {
-      file,
-      attachComments: true,
-    },
-  );
-  const hasRewrittenImportsOrExports = maybeRewriteImportsOrExports(ast);
-  const hasRewrittenRequires = maybeRewriteRequire(ast);
-  const hasGlobalThis = maybeRewriteGlobalThis(ast);
-  let hasRewrittenAwait = false;
+async function getGlobals(
+  file,
+  map,
+  assignedMap,
+  isCommon,
+  archsForFile,
+  ast,
+) {
+  maybeRewriteImportsOrExports(ast);
+  maybeRewriteRequire(ast);
+  maybeRewriteGlobalThis(ast);
   if (archsForFile.has('server')) {
-    hasRewrittenAwait = maybeRewriteAwait(ast, archsForFile.size !== 1);
+    maybeRewriteAwait(ast, archsForFile.size !== 1);
   }
   const scopeManager = analyzeScope(ast, {
     ecmaVersion: 2022,
@@ -321,18 +320,28 @@ async function getGlobals(file, map, assignedMap, isCommon, archsForFile) {
   const assigned = getGlobalsFromScope(isCommon, currentScope, true);
   map.set(file, all);
   assignedMap.set(file, assigned);
-  if (hasRewrittenImportsOrExports || hasRewrittenRequires || hasRewrittenAwait || hasGlobalThis) {
-    await fsPromises.writeFile(file, astToCode(ast));
-  }
+  await fsPromises.writeFile(file, astToCode(ast));
 }
 
-export async function getPackageGlobals(isCommon, outputFolder, archsForFiles) {
+export async function getPackageGlobals(
+  isCommon,
+  outputFolder,
+  archsForFiles,
+  asts,
+) {
   const map = new Map();
   const assignedMap = new Map();
   const files = Array.from(archsForFiles.keys());
   await Promise.all(files.map((file) => {
     try {
-      return getGlobals(path.join(outputFolder, file), map, assignedMap, isCommon, archsForFiles.get(file));
+      return getGlobals(
+        path.join(outputFolder, file),
+        map,
+        assignedMap,
+        isCommon,
+        archsForFiles.get(file),
+        asts.get(file),
+      );
     }
     catch (e) {
       console.log('error with', file);

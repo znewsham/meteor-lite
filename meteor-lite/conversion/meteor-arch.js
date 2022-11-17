@@ -129,24 +129,26 @@ export default class MeteorArch {
   }
 
   async getImportTreeForPackageAndClean(
-    outputFolder,
+    baseFolder,
     archsForFiles,
     isCommon,
     exportedMap,
+    astForFiles,
   ) {
     return getImportTreeForPackageAndClean(
-      outputFolder,
+      baseFolder,
       [
-        ...(this.getMainModule() ? [path.join(outputFolder, this.getMainModule())] : []),
+        ...(this.getMainModule() ? [path.join(baseFolder, this.getMainModule())] : []),
         ...Array.from(this.getImports())
           .filter((file) => file.startsWith('.'))
           .filter((file) => file.endsWith('.js'))
-          .map((file) => path.join(outputFolder, file)),
+          .map((file) => path.join(baseFolder, file)),
       ],
       this.#archName,
       archsForFiles,
       isCommon,
       exportedMap,
+      astForFiles,
     );
   }
 

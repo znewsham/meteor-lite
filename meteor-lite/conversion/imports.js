@@ -29,13 +29,13 @@ function nodeLoadsFile(node) {
   return ImportExportTypes.has(node.type) && node.source && node.source.value.match(/^\.\.?\//);
 }
 
-export async function getImportTreeForFile(outputFolder, absoluteFile, arch, archsForFilesMap, ast) {
+export async function getImportTreeForFile(baseFolder, absoluteFile, arch, archsForFilesMap, ast) {
   const actualFile = absoluteFile;
   try {
     if (!actualFile || !actualFile.endsWith('.js')) {
       return [];
     }
-    const baseFile = actualFile.replace(outputFolder, '.');
+    const baseFile = actualFile.replace(baseFolder, '.');
     if (archsForFilesMap.has(baseFile) && archsForFilesMap.get(baseFile).has(arch)) {
       return [];
     }

@@ -29,7 +29,7 @@ export default function replaceImportsInAst(ast, isMultiArch, serverOnlyImportsS
             source: {
               type: 'Literal',
               value: `#${node.source.value}`,
-              raw: `${quote}${node.source.value}${quote}`,
+              raw: `${quote}#${node.source.value}${quote}`,
             },
           });
         }

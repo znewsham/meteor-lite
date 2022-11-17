@@ -184,7 +184,8 @@ async function getCleanAST(file) {
   }
 }
 
-export async function maybeCleanAST(file, isCommon, exportedMap) {
+export async function maybeCleanAST(baseFolder, file, isCommon, exportedMap) {
+  const baseFile = file.replace(baseFolder, '.');
   if (!file.endsWith('.js') && !file.endsWith('.ts')) {
     const resolvedFile = await resolveFile(file);
     if (!resolvedFile.endsWith('.js') && !resolvedFile.endsWith('.ts')) {
@@ -203,7 +204,7 @@ export async function maybeCleanAST(file, isCommon, exportedMap) {
   let importAstBodyIndex = 0;
   if (usesExports && !hasRequires && !usesUncleanExports) {
     exported = rewriteExports(ast);
-    exportedMap.set(file, exported);
+    exportedMap.set(baseFile, exported);
   }
   if (requiresCleaning || importEntries.size || exported?.length) {
     importEntries.forEach(({ node }) => {
@@ -213,7 +214,7 @@ export async function maybeCleanAST(file, isCommon, exportedMap) {
     if (hasRequires && hasImports) {
       throw new Error(`Imports and requires in ${file} (un-fixable)`);
     }
-    await fsPromises.writeFile(file, astToCode(ast));
+    // await fsPromises.writeFile(file, astToCode(ast));
   }
   return ast;
 }

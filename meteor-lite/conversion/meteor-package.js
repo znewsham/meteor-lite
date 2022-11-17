@@ -151,6 +151,14 @@ export default class MeteorPackage {
 
   #lock = new AsyncLock();
 
+  #asts = new Map();
+
+  #archsForFiles = new Map();
+
+  #loadedExports = new Map();
+
+  #astsLoaded = false;
+
   #cancelled = false;
 
   #dependedOn = new Map();
@@ -746,19 +754,14 @@ export default class MeteorPackage {
 
   async #writeDependencies(outputParentFolderMapping) {
     await this.#loadedPromise;
-    await Promise.all(Array.from(this.#dependenciesToEnsure).map((p) => {
-      const dep = this.getDependency(p);
-      if (!dep) {
-        return undefined;
-      }
-      return dep.#loadedPromise;
-    }));
+
     if (this.#alreadyWritten) {
       return true;
     }
     this.#alreadyWritten = true;
     await Promise.all(Array.from(this.#dependenciesToEnsure).map(async (p) => {
       const dep = this.getDependency(p);
+      await dep.#loadedPromise;
       if (!dep || !dep.isFullyLoaded || !dep.#shouldBeWritten || dep.#alreadyWritten) {
         return;
       }
@@ -767,17 +770,14 @@ export default class MeteorPackage {
     return false;
   }
 
-  async getImportTreeForPackageAndClean(outputFolder) {
-    const archsForFiles = new Map();
-    const exportedMap = new Map();
+  async #loadImportTreeForPackageAndClean() {
     await Promise.all(this.getActiveLeafArchs().map((arch) => arch.getImportTreeForPackageAndClean(
-      outputFolder,
-      archsForFiles,
+      this.#folderPath,
+      this.#archsForFiles,
       this.isCommon(),
-      exportedMap,
+      this.#loadedExports,
+      this.#asts,
     )));
-
-    return { archsForFiles, exportedMap };
   }
 
   async #writeEntryPoints(outputFolder) {
@@ -826,6 +826,30 @@ export default class MeteorPackage {
     return this.#lock.acquire(writingSymbol, () => this.#writeToNpmModule(outputParentFolderMapping, convertTests));
   }
 
+  async #setupOutputFolder(outputFolder) {
+    if (this.#type === MeteorPackage.Types.ISO) {
+      await this.#copyISOPackResources(outputFolder);
+    }
+    else {
+      const actualPath = await fs.realpath(this.#folderPath);
+
+      await fs.copy(
+        actualPath,
+        outputFolder,
+        {
+          filter: (src, dest) => {
+            const relative = dest.replace(outputFolder, '.');
+            if (this.#asts.has(relative)) {
+              return false;
+            }
+            return !src.includes('.npm') && !src.includes('package.json');
+          },
+        },
+      );
+      this.#filesToWatch = (await listFilesInDir(actualPath)).filter((fileName) => !fileName.includes('/.npm/'));
+    }
+  }
+
   // a mapping of [MeteorPackage.Type]: absoluteOutputDirectory
   async #writeToNpmModule(outputParentFolderMapping, convertTests) {
     if (this.#cancelled) {
@@ -850,40 +874,13 @@ export default class MeteorPackage {
         }
       }
       const outputFolder = path.resolve(`${outputParentFolder}/${meteorNameToNodePackageDir(this.#meteorName)}`);
-      if (this.#type === MeteorPackage.Types.ISO) {
-        await this.#copyISOPackResources(outputFolder);
-      }
-      else {
-        const actualPath = await fs.realpath(this.#folderPath);
 
-        await fs.copy(
-          actualPath,
-          outputFolder,
-          {
-            filter(src) {
-              return !src.includes('.npm') && !src.includes('package.json');
-            },
-          },
-        );
-        this.#filesToWatch = (await listFilesInDir(actualPath)).filter((fileName) => !fileName.includes('/.npm/'));
-      }
-      const { archsForFiles, exportedMap } = await this.getImportTreeForPackageAndClean(outputFolder);
-      this.getArchs().forEach((arch) => {
-        const mainModule = arch.getMainModule();
-        if (mainModule) {
-          const absoluteMainModule = path.join(outputFolder, mainModule);
-          if (exportedMap.has(absoluteMainModule)) {
-            this.addExports(
-              exportedMap.get(absoluteMainModule),
-              arch.name,
-            );
-          }
-        }
-      });
+      await this.#setupOutputFolder(outputFolder);
       const { all: globalsByFile, assigned: packageGlobalsByFile } = await getPackageGlobals(
         this.isCommon(),
         outputFolder,
-        archsForFiles,
+        this.#archsForFiles,
+        this.#asts,
       );
       const allGlobals = new Set(Array.from(globalsByFile.values()).flatMap((v) => Array.from(v)));
       const packageGlobals = new Set(Array.from(packageGlobalsByFile.values()).flatMap((v) => Array.from(v)));
@@ -905,9 +902,10 @@ export default class MeteorPackage {
         importedGlobalsByArch,
         this.isCommon(),
         (name) => this.getDependency(name),
-        archsForFiles.get(file.replace(outputFolder, '.')),
+        this.#archsForFiles.get(file.replace(outputFolder, '.')),
         packageGlobals,
         serverOnlyImportsSet,
+        this.#asts.get(file.replace(outputFolder, '.')),
       )));
       if (serverOnlyImportsSet.size) {
         this.addMeteorDependencies([nodeNameToMeteorName(NOOP_PACKAGE_NAME)], ['server']);
@@ -920,9 +918,9 @@ export default class MeteorPackage {
       });
       if (this.#convertTestPackage && this.#hasTests) {
         // puke - this entire chunk.
-        const { archsForFiles: testArchsForFiles } = await this.#testPackage.getImportTreeForPackageAndClean(outputFolder);
-        Array.from(testArchsForFiles.keys()).forEach((key) => {
-          if (archsForFiles.has(key)) {
+        const testArchsForFiles = new Map(this.#testPackage.#archsForFiles);
+        Array.from(this.#testPackage.#archsForFiles.keys()).forEach((key) => {
+          if (this.#archsForFiles.has(key)) {
             testArchsForFiles.delete(key);
           }
         });
@@ -930,6 +928,7 @@ export default class MeteorPackage {
           this.isCommon(),
           outputFolder,
           testArchsForFiles,
+          this.#testPackage.#asts,
         );
         const packageTestGlobals = new Set(Array.from(packageTestGlobalsByFile.values()).flatMap((v) => Array.from(v)));
         const testServerOnlyImportsSet = new Set();
@@ -1137,12 +1136,17 @@ export default class MeteorPackage {
   }
 
   get folderPath() {
-    return this.folderPath;
+    return this.#folderPath;
+  }
+
+  setFolderPath(folderPath) {
+    this.#folderPath = folderPath;
+    this.#testPackage.#folderPath = folderPath;
   }
 
   async readFromISOPack(fullFolder) {
     this.#type = MeteorPackage.Types.ISO;
-    this.#folderPath = fullFolder;
+    this.setFolderPath(fullFolder);
     const fullISOPack = JSON.parse((await fsPromises.readFile(path.join(fullFolder, 'isopack.json'))).toString());
     const isopack = fullISOPack['isopack-2'] || fullISOPack['isopack-1'];
     this.setBasic({
@@ -1173,6 +1177,7 @@ export default class MeteorPackage {
     this.isFullyLoaded = true;
     this.#shouldBeWritten = true;
     await this.readFromISOPack(fullFolder);
+    await this.#ensureExportsLoaded();
 
     // first make sure all impled or used packages are loaded
     this.#waitingWrite = (await Promise.all(
@@ -1275,7 +1280,7 @@ export default class MeteorPackage {
 
   async readDependenciesFromPacakgeJS(packageJsPath, packageType) {
     this.#type = packageType;
-    this.#folderPath = path.dirname(packageJsPath);
+    this.setFolderPath(path.dirname(packageJsPath));
     const script = new vm.Script((await fsPromises.readFile(packageJsPath)).toString());
     const context = packageJsContext(this);
     try {
@@ -1293,10 +1298,37 @@ export default class MeteorPackage {
     }
   }
 
+  async #ensureASTs() {
+    if (this.#astsLoaded) {
+      return;
+    }
+    this.#astsLoaded = true;
+    await this.#loadImportTreeForPackageAndClean();
+  }
+
+  async #ensureExportsLoaded() {
+    await this.#ensureASTs();
+    this.getArchs().forEach((arch) => {
+      const mainModule = arch.getMainModule();
+      if (mainModule) {
+        if (this.#loadedExports.has(mainModule)) {
+          this.addExports(
+            this.#loadedExports.get(mainModule),
+            arch.name,
+          );
+        }
+      }
+    });
+    if (this.#testPackage) {
+      await this.#testPackage.#ensureExportsLoaded();
+    }
+  }
+
   async loadFromMeteorPackage(packageJsPath, packageType) {
     try {
       await this.readDependenciesFromPacakgeJS(packageJsPath, packageType);
       await this.ensurePackages();
+      await this.#ensureExportsLoaded();
       if (this.#convertTestPackage && this.#hasTests) {
         try {
           await this.#testPackage.ensurePackages();
