@@ -8,9 +8,8 @@ import maybeRewriteImportsOrExports from './ast/rewrite/import-meteor.js';
 import maybeRewriteRequire from './ast/rewrite/require.js';
 import maybeRewriteGlobalThis from './ast/rewrite/global-this.js';
 import maybeRewriteAwait from './ast/rewrite/await.js';
-import { astToCode, maybeCleanAST, parseContentsToAST } from './ast/index.js';
-import rewriteASTForPackageGlobals from './ast/rewrite/package-globals.js';
-import replaceImportsInAst from './ast/rewrite/replace-imports';
+import { astToCode, maybeCleanAST } from './ast/index.js';
+import replacePackageGlobalsWithImportsOrRequire from './ast/rewrite/package-globals.js';
 
 export const generateOptions = {
   comments: true,
@@ -56,11 +55,9 @@ globalBlacklist.delete('global'); // the meteor package does weirdness here - it
 // we treat all these as package globals.
 const BAD = new Set(['exports', 'module', 'require', 'Npm', 'Assets']);
 
-
 function getImportStr(
   imports,
   isMultiArch,
-  outputFolder,
   file,
   isCommon,
   packageGetter,
@@ -71,7 +68,7 @@ function getImportStr(
       // find the correct path to the __globals.js file in the case that a folder in a package is trying to use a package global
       let fromToUse = from;
       if (fromToUse === '__globals.js') {
-        const relative = path.resolve(file).replace(outputFolder, '').split('/').slice(2)
+        const relative = file.split('/').slice(2)
           .map(() => '..')
           .join('/');
         fromToUse = `./${relative}${relative && '/'}__globals.js`;
@@ -121,8 +118,7 @@ function getImportStr(
     }).join('\n');
 }
 
-export async function replaceGlobalsInFile(
-  outputFolder,
+export function replaceGlobalsInFile(
   globals,
   file,
   importedGlobalsByArchMaps,
@@ -130,7 +126,6 @@ export async function replaceGlobalsInFile(
   packageGetter,
   archs,
   packageGlobalsSet,
-  serverOnlyImportsSet,
   ast,
 ) {
   const isMultiArch = archs?.size > 1;
@@ -166,32 +161,19 @@ export async function replaceGlobalsInFile(
       imports.get(from).add(global);
     }
   });
+  let importStr;
   if (imports.size) {
-    const importStr = getImportStr(
+    importStr = getImportStr(
       imports,
       isMultiArch,
-      outputFolder,
       file,
       isCommon,
       packageGetter,
       archs,
     );
-    try {
-      replaceImportsInAst(ast, isMultiArch, serverOnlyImportsSet, file);
-      rewriteASTForPackageGlobals(ast, imports.get('__globals.js') || new Set());
-      await fsPromises.writeFile(
-        file,
-        [
-          importStr,
-          astToCode(ast),
-        ].join('\n'),
-      );
-    }
-    catch (e) {
-      console.log('error with', file);
-      throw e;
-    }
+    replacePackageGlobalsWithImportsOrRequire(ast, imports.get('__globals.js') || new Set());
   }
+  return importStr;
 }
 
 async function maybeCleanAndGetImportTreeForSingleFile(
@@ -295,7 +277,7 @@ function getGlobalsFromScope(isCommon, currentScope, writeOnly = false) {
 }
 
 async function getGlobals(
-  file,
+  relativeFile,
   map,
   assignedMap,
   isCommon,
@@ -318,35 +300,25 @@ async function getGlobals(
   const currentScope = scopeManager.acquire(ast);
   const all = getGlobalsFromScope(isCommon, currentScope);
   const assigned = getGlobalsFromScope(isCommon, currentScope, true);
-  map.set(file, all);
-  assignedMap.set(file, assigned);
-  await fsPromises.writeFile(file, astToCode(ast));
+  map.set(relativeFile, all);
+  assignedMap.set(relativeFile, assigned);
 }
 
 export async function getPackageGlobals(
   isCommon,
-  outputFolder,
   archsForFiles,
   asts,
 ) {
   const map = new Map();
   const assignedMap = new Map();
   const files = Array.from(archsForFiles.keys());
-  await Promise.all(files.map((file) => {
-    try {
-      return getGlobals(
-        path.join(outputFolder, file),
-        map,
-        assignedMap,
-        isCommon,
-        archsForFiles.get(file),
-        asts.get(file),
-      );
-    }
-    catch (e) {
-      console.log('error with', file);
-      throw e;
-    }
-  }));
+  await Promise.all(files.map((file) => getGlobals(
+    file,
+    map,
+    assignedMap,
+    isCommon,
+    archsForFiles.get(file),
+    asts.get(file),
+  )));
   return { all: map, assigned: assignedMap };
 }

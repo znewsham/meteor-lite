@@ -94,9 +94,10 @@ export default class ConversionJob {
   }
 
   async reconvert(meteorPackage) {
-    meteorPackage.isFullyLoaded = false;
     meteorPackage.allowRebuild();
     await this.loadPackage(meteorPackage, meteorPackage.version);
+    await meteorPackage.ensurePackageFullyLoaded();
+    await meteorPackage.ensureTestPackageFullyLoaded();
     await meteorPackage.writeToNpmModule(this.#outputDirectories());
     return true;
   }
@@ -165,12 +166,14 @@ export default class ConversionJob {
         .map((meteorName) => meteorName.replace(TestSuffix, '')));
 
       Object.entries(versionResult.answer).forEach(([meteorName, version]) => {
-        this.warmPackage(`${meteorName}@${version}`);
+        if (!meteorName.endsWith(TestSuffix)) {
+          this.warmPackage(`${meteorName}@${version}`);
+        }
       });
     }
     else {
       this.#testPackages = new Set();
-      meteorNames.forEach((meteorName) => this.warmPackage(meteorName));
+      meteorNames.filter((meteorName) => !meteorName.endsWith(TestSuffix)).forEach((meteorName) => this.warmPackage(meteorName));
     }
     const cleanNames = meteorNames
       .map((meteorName) => {
@@ -187,17 +190,11 @@ export default class ConversionJob {
     // first convert all the non-test packages so we know they're done, then we do all the test packages.
     // this should help with circular dependencies (a little)
     await Promise.all(cleanNames.map(async (nameAndMaybeVersion) => this.#convertPackage(nameAndMaybeVersion)));
-    const testNames = cleanNames
-      .filter((meteorNameAndVersion) => this.#testPackages.has(meteorNameAndVersion.split('@')[0]));
-
-    const testPackageDependencies = Array.from(
-      new Set(
-        testNames.flatMap((nameAndVersion) => Object.keys(this.get(nameAndVersion).testVersionRecord.dependencies)),
-      ),
-    );
-    await Promise.all(testPackageDependencies.map((async (meteorNameAndVersion) => this.#convertPackage(meteorNameAndVersion))));
-    await Promise.all(testNames
-      .map(async (meteorNameAndVersion) => this.#convertPackage(meteorNameAndVersion, true)));
+    await Promise.all(Array.from(this.getAll()).map(async (meteorPackage) => {
+      await meteorPackage.ensurePackageFullyLoaded();
+      await meteorPackage.ensureTestPackageFullyLoaded();
+      await meteorPackage.writeToNpmModule(this.#outputDirectories());
+    }));
   }
 
   async #convertPackage(meteorNameAndMaybeVersionConstraint, convertTests = false) {
@@ -217,7 +214,6 @@ export default class ConversionJob {
       }
     }
     await this.loadPackage(meteorPackage, maybeVersionConstraint);
-    await meteorPackage.writeToNpmModule(this.#outputDirectories(), convertTests);
     return true;
   }
 
@@ -252,8 +248,6 @@ export default class ConversionJob {
     );
     if (alreadyConvertedJson) {
       const isGood = await meteorPackage.loadFromNodeJSON(alreadyConvertedJson);
-      // even though this is already converted, we need to trigger this write to ensure any missing dependencies are written (edge casey)
-      await meteorPackage.writeToNpmModule(this.#outputDirectories(), false);
       return isGood;
     }
     return false;
@@ -463,8 +457,6 @@ export default class ConversionJob {
           if (alreadyConvertedJson) {
             const isGood = await meteorPackage.loadFromNodeJSON(alreadyConvertedJson);
             if (isGood) {
-              // even though this is already converted, we need to trigger this write to ensure any missing dependencies are written (edge casey)
-              await meteorPackage.writeToNpmModule(this.#outputDirectories(), false);
               return false;
             }
           }

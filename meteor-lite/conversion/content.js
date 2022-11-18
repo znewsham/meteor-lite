@@ -1,26 +1,11 @@
-import path from 'path';
-import * as acorn from 'acorn';
-import fsPromises from 'fs/promises';
-import { walk } from 'estree-walker';
 import { nodeNameToMeteorName, meteorNameToNodeName } from '../helpers/helpers.js';
-import { acornOptions } from './acorn-options';
 
-export async function getExportMainModuleStr(meteorName, mainModule, outputFolder, isCommon) {
-  const ast = acorn.parse(
-    (await fsPromises.readFile(path.join(outputFolder, mainModule))).toString(),
-    acornOptions,
-  );
-  let hasDefault = false;
-  walk(ast, {
-    enter(node) {
-      if (node.type === 'ExportDefaultDeclaration') {
-        hasDefault = true;
-      }
-      else if (node.type === 'ExportSpecifier' && node.exported.name === 'default' && node.local.name === 'default') {
-        hasDefault = true;
-      }
-    },
-  });
+export async function getExportMainModuleStr(
+  meteorName,
+  mainModule,
+  isCommon,
+  hasDefault,
+) {
   if (isCommon) {
     return [
       `const __package__ = require("${mainModule}");`,

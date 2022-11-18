@@ -30,7 +30,10 @@ const IgnoredParentTypes = new Set([
   'ObjectPattern',
 ]);
 
-export default function rewriteASTForPackageGlobals(ast, packageGlobalsSet) {
+export default function replacePackageGlobalsWithImportsOrRequire(ast, packageGlobalsSet) {
+  if (packageGlobalsSet.size === 0) {
+    return;
+  }
   const scopeManager = analyzeScope(ast, {
     ecmaVersion: 6,
     sourceType: 'module',
