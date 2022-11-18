@@ -39,12 +39,12 @@ export default class Cache {
     await fsExtra.writeFile(finalPath, contents);
   }
 
-  async getCacheKey(filePath) {
-    return this.constructor.getCacheKey(filePath);
+  async getCacheKey(filePath, stat) {
+    return this.constructor.getCacheKey(filePath, stat);
   }
 
-  static async getCacheKey(filePath) {
-    const stats = await fsExtra.stat(filePath);
+  static async getCacheKey(filePath, stat) {
+    const stats = stat || await fsExtra.stat(filePath);
     return stats.mtime;
   }
 
@@ -60,7 +60,7 @@ export default class Cache {
   async get(filePath) {
     return this.#lock.acquire(filePath, async () => {
       const stat = await fs.stat(filePath);
-      const cacheKey = stat.mtime.getTime();
+      const cacheKey = this.getCacheKey(filePath, stat);
       if (this.#map.has(filePath)) {
         const cached = this.#map.get(filePath);
         if (cached && cached.cacheKey !== cacheKey) {
@@ -86,8 +86,7 @@ export default class Cache {
 
   async set(filePath, contents) {
     return this.#lock.acquire(filePath, async () => {
-      const stat = await fs.stat(filePath);
-      const cacheKey = stat.mtime.toString();
+      const cacheKey = this.getCacheKey(filePath);
       this.#map.set(
         filePath,
         {

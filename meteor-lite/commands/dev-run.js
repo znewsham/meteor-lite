@@ -77,7 +77,6 @@ class AppProcess {
     const shellDir = process.env.METEOR_SHELL_DIR || path.resolve(path.join(baseBuildFolder, 'shell'));
     await fsExtra.ensureDir(shellDir);
     const ipc = await AppProcess.LoadInterProcessMessaging();
-    process.chdir('.meteor/local/server/'); // only needed (arguably) for @qualia:prod-shell otherwise it writes to the actual app dir
     this.process = spawn(
       'node',
       [
@@ -94,6 +93,9 @@ class AppProcess {
           NODE_ENV: 'development',
           TEST_METADATA: this.#getTestMetadata(),
         },
+
+        // this must be here and not a process.cwd to allow rebuilds (also for cleanliness its just better)
+        cwd: path.resolve('.meteor/local/server/'),
       },
     );
     ipc.enable(this.process);
