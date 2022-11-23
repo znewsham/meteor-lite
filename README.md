@@ -5,11 +5,11 @@
 3. Run the below to get started (no OTF rebuilds, kill and reup when you want)
 
 ```bash
-git clone https://github.com/znewsham/meteor-to-node
-git clone --branch make-compatible https://github.com/znewsham/blaze
-git clone --branch make-compatible https://github.com/znewsham/meteor
+git clone https://github.com/qualialabs/meteor-lite
+git clone --branch make-compatible https://github.com/qualialabs/blaze
+git clone --branch make-compatible https://github.com/qualialabs/meteor
 
-cd ./meteor-to-node/meteor-lite && npm install
+cd ./meteor-lite && npm install
 ```
 
 visit http://localhost:3000 and feast your eyes on your non-meteor meteor app. Try `collection.insert({...})` or `collection.findOne()` (literally `collection`), play with the counter button. Observer the websocket.
