@@ -72,6 +72,7 @@ program
         outputSharedDirectory,
         outputLocalDirectory,
         meteorInstall: meteor || `${os.homedir()}/.meteor`,
+        checkVersions: false,
       });
       console.log('build complete');
     }
@@ -82,7 +83,8 @@ program
         job,
         inspectBrk,
         inspect,
-      });
+      },
+    );
   });
 
 program
@@ -169,6 +171,8 @@ program
   .option('-d, --directories <directories...>', 'the prioritized list of additional directories to search for packages')
   .option('--extra-packages <extraPackages...>', 'any extra packages to load')
   .option('--test-directory <testDirectory>', 'a path to a test directory to use (useful for debugging)')
+  .option('--inspect [inspect]', 'inspect the process')
+  .option('--inspect-brk [inspectBrk]', 'inspect the process')
   .action(async ({
     directories,
     packages,
@@ -176,6 +180,8 @@ program
     extraPackages,
     meteor,
     testDirectory,
+    inspectBrk,
+    inspect,
   }) => {
     const job = await buildAppForTestPackages({
       directories,
@@ -190,7 +196,14 @@ program
       isAppTest: false,
       isTest: true,
     };
-    await run(DefaultArchs, { job, buildAndWatchPackages: true, watchAll: true, testMetadata });
+    await run(DefaultArchs, {
+      job,
+      buildAndWatchPackages: true,
+      watchAll: true,
+      testMetadata,
+      inspectBrk,
+      inspect,
+    });
   });
 
 program

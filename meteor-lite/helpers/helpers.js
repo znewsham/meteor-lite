@@ -49,5 +49,10 @@ export function sortSemver(arr) {
 }
 
 export function meteorVersionToSemver(versions) {
-  return versions.split(/\s*\|\|\s*/).map((versionConstraint) => (versionConstraint.startsWith('0') ? '0.x' : `^${versionConstraint}`)).join(' || ');
+  return versions.split(/\s*\|\|\s*/).map((versionConstraint) => {
+    if (versionConstraint.startsWith('^')) {
+      return versionConstraint;
+    }
+    return (versionConstraint.startsWith('0') ? '0.x' : `^${versionConstraint}`);
+  }).join(' || ');
 }

@@ -35,6 +35,7 @@ export default async function writePeerDependencies({ name, nodePackagesAndVersi
       // NOTE: maybe figure out how to get this to play nice with github, I don't think we really care too much
       .filter(({ version }) => !version.startsWith('git'));
   }
+  const directDependencies = new Set(meteorPackageNamesMaybeWithVersions.map(({ nodeName }) => nodeName));
 
   // TODO: make calculateVersions work with the meteor constraint solver.
   const { finalVersions, badVersions } = await calculateVersions(
@@ -57,7 +58,7 @@ export default async function writePeerDependencies({ name, nodePackagesAndVersi
   }
   Object.entries(finalVersions).forEach(([depName, version]) => {
     if (!packageJson.dependencies[depName]) {
-      if (version.startsWith('file:')) {
+      if (version.startsWith('file:') || directDependencies.has(depName)) {
         packageJson.dependencies[depName] = version;
         delete finalVersions[depName];
       }

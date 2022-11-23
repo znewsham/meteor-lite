@@ -2,7 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import pacote from 'pacote';
 import { meteorNameToNodePackageDir, nodeNameToMeteorName } from '../../helpers/helpers';
-import { getNpmRc, registryForPackage } from '../../helpers/ensure-npm-rc';
+import { extraOptionsForRegistry, getNpmRc, registryForPackage } from '../../helpers/ensure-npm-rc';
 
 export default async function recurseMeteorNodePackages(
   startingList,
@@ -24,16 +24,16 @@ export default async function recurseMeteorNodePackages(
       loadedChain = [],
       evaluateTestPackage = false,
     }) => {
+      const registry = await registryForPackage(nodeName, npmRc);
       const options = {
         fullReadJson: true,
         fullMetadata: true,
         where: process.cwd(),
+        ...(registry && { registry }),
+        ...await extraOptionsForRegistry(registry, npmRc),
       };
-      const registry = await registryForPackage(nodeName, npmRc);
-      if (registry) {
-        options.registry = registry;
-      }
-      const packageSpec = version ? `${nodeName}@${version}` : nodeName;
+      // TODO: figure out how/where to force these versions
+      const packageSpec = version ? `${nodeName}@${version.startsWith('^') ? version : `^${version}`}` : nodeName;
       const has = packageJsonMap.has(packageSpec);
       let json = packageJsonMap.get(packageSpec);
       let pathToLocal;

@@ -28,6 +28,7 @@ function isResolvedThroughScope(node, currentScope) {
 const IgnoredParentTypes = new Set([
   'CatchClause',
   'ObjectPattern',
+  'ExportSpecifier',
 ]);
 
 export default function replacePackageGlobalsWithImportsOrRequire(ast, packageGlobalsSet) {

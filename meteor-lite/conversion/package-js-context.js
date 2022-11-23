@@ -85,6 +85,7 @@ export default function packageJsContext(meteorPackage) {
   const ret = {
     process: globalThis.process,
     global: globalThis,
+    isMeteorLite: true,
     onUsePromise: undefined,
     onTestPromise: undefined,
     Cordova: {

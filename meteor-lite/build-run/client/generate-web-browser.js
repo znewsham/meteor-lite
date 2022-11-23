@@ -15,6 +15,7 @@ import stubsPlugin from './stubs-plugin.js';
 import onStart from './start-plugin.js';
 import onEnd from './end-plugin.js';
 import Cache from '../cache.js';
+import addJsExtension from './add-js-extension';
 
 // can't actually be weak since `build` is new each time.
 const weakMap = new Map();
@@ -62,6 +63,7 @@ async function buildClient({
       blazePlugin(cache),
       lessPlugin(cache),
       stubsPlugin(buildRoot),
+      addJsExtension(buildRoot),
       onStart(async () => {
         if (isInitial) {
           return;

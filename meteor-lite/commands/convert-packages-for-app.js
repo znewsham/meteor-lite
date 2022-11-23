@@ -47,6 +47,7 @@ export default async function convertPackagesToNodeModulesForApp({
   meteorInstall,
   forceRefresh,
   appPackagesOverride,
+  checkVersions = true,
 }) {
   // by using versions instead of packages we'll enforce converting the exact versions of every package
   // but it also means we're gonna look at every package - not just "ours" + lazily their dependencies
@@ -71,7 +72,7 @@ export default async function convertPackagesToNodeModulesForApp({
     meteorInstall,
     forceRefresh,
     skipNonLocalIfPossible: true,
-    checkVesions: true,
+    checkVersions,
   });
 
   const outputFolderMapping = {

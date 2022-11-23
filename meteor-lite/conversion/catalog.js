@@ -43,6 +43,9 @@ export default class Catalog {
       this.#versionParser.parse(a.version),
       this.#versionParser.parse(b.version),
     ));
+    if (pkg === 'babel-compiler') {
+      console.log(pkg, versionRecords.reverse());
+    }
     return versionRecords;
   }
 

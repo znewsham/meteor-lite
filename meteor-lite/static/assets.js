@@ -1,7 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 
-const basePath = path.join(path.dirname(import.meta.url), 'assets').replace('file:', '');
+// TODO (down the road): swap to @meteor/assets
+const basePath = path.join(path.dirname(import.meta.url), 'private').replace('file:', '');
 
 globalThis.Assets = {
   getText(file) {

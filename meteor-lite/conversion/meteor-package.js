@@ -1,12 +1,14 @@
 import path from 'path';
 import vm from 'vm';
-import fs from 'fs-extra';
+import fs, { ensureDir } from 'fs-extra';
 import fsPromises from 'fs/promises';
 import semver from 'semver';
 import rimraf from 'rimraf';
 import util from 'util';
 import AsyncLock from 'async-lock';
 import { walk } from 'estree-walker';
+import { dirSync } from 'tmp';
+
 import {
   meteorNameToNodeName,
   meteorNameToNodePackageDir,
@@ -29,18 +31,8 @@ const rimrafAsync = util.promisify(rimraf);
 // we need a "noop" package for when we have an import/export that should only be available to specific archs
 const NOOP_PACKAGE_NAME = '@meteor/noop';
 
-const SERVER_ASSETS_FILE = [
-  'import fs from \'fs\';',
-  'import fsPromises from \'fs/promises\';',
-  'import Fiber from \'fibers\';',
-  'import path from \'path\';',
-  'const basePath = path.dirname(import.meta.url).replace(\'file:\', \'\')',
-  'export default {',
-  '  getText(file) {',
-  '    return Fiber.current ? Promise.await(fsPromises.readFile(path.join(basePath, file))).toString() : fs.readFileSync(path.join(basePath, file)).toString();',
-  '  }',
-  '};',
-].join('\n');
+// we're no longer going to inject asset code into a package at runtime - instead we'll make it part of a package.
+const ASSETS_PACKAGE_NAME = '@meteor/assets';
 
 const writingSymbol = Symbol('writing');
 
@@ -125,6 +117,8 @@ export default class MeteorPackage {
     OTHER: Symbol('OTHER'),
     NODE: Symbol('NODE'), // loaded from a node package - doesn't need to be written or converted
   };
+
+  #typescriptDefinitionFile;
 
   #folderName;
 
@@ -491,6 +485,9 @@ export default class MeteorPackage {
   addAssets(files, archNames) {
     const actualArchs = this.getArchs(archNames);
     files.forEach((file) => {
+      if (file.endsWith('.d.ts')) {
+        this.#typescriptDefinitionFile = file;
+      }
       actualArchs.forEach((arch) => {
         arch.addAsset(file);
       });
@@ -647,6 +644,7 @@ export default class MeteorPackage {
       version: this.#version && semver.coerce(this.#version).version,
       description: this.#description,
       type: this.isCommon() ? 'commonjs' : 'module',
+      ...(this.#typescriptDefinitionFile && { types: `./${this.#typescriptDefinitionFile}` }),
       dependencies: this.#rewriteDependencies(this.#dependencies),
 
       devDependencies: this.#rewriteDependencies({
@@ -881,7 +879,7 @@ export default class MeteorPackage {
     )));
   }
 
-  #getExportNameSet() {
+  #getExportNameSet(convertTests) {
     const allGlobals = new Set(Array.from(this.#globalsByFile.values()).flatMap((v) => Array.from(v)));
     const importedGlobalsByArch = this.getImportedGlobalsMaps(allGlobals);
     // these are all the globals USED in the package. Not just those assigned.
@@ -894,14 +892,14 @@ export default class MeteorPackage {
       ...this.getExportedVars(),
       ...badPackageGlobals,
       ...packageGlobals,
-      ...(this.#hasTests && this.#testPackage) ? this.#testPackage.#getExportNameSet() : [],
+      ...(convertTests && this.#hasTests && this.#testPackage) ? this.#testPackage.#getExportNameSet() : [],
     ]);
   }
 
   // can't be async because writing package.json depends on it - but it does return an array of promises
-  #writeGlobalsAndModules(outputFolder) {
+  #writeGlobalsAndModules(outputFolder, convertTests) {
     const promises = [];
-    const exportNamesSet = this.#getExportNameSet();
+    const exportNamesSet = this.#getExportNameSet(convertTests);
 
     const hasRequire = exportNamesSet.has('require');
     const hasExports = exportNamesSet.has('exports');
@@ -913,15 +911,7 @@ export default class MeteorPackage {
     exportNamesSet.delete('Npm');
     exportNamesSet.delete('Assets');
     if (hasAssets) {
-      this.addMeteorDependencies([nodeNameToMeteorName(NOOP_PACKAGE_NAME)], ['server']);
-      this.#imports['#assets'] = {
-        node: `./${this.#filePrefix}__server_assets.js`,
-        default: NOOP_PACKAGE_NAME,
-      };
-      promises.push(fs.writeFile(
-        `${outputFolder}/${this.#filePrefix}__server_assets.js`,
-        SERVER_ASSETS_FILE,
-      ));
+      this.addMeteorDependencies([nodeNameToMeteorName(ASSETS_PACKAGE_NAME)], ['server']);
     }
     if ((hasRequire && !hasExports) && this.getArch('server')?.getMainModule()) {
       warn(`esm module ${this.#meteorName} using require, this might not work`);
@@ -958,14 +948,14 @@ export default class MeteorPackage {
       promises.push(fsPromises.writeFile(
         `${outputFolder}/__globals.js`,
         [
-          ...(hasModule || hasNpm || hasRequire ? ['import module from "#module";'] : []),
-          ...hasAssets ? ['import Assets from \'#assets\''] : [],
+          ...(hasNpm || hasRequire ? ['import module from "#module";'] : []),
+          ...hasAssets ? [`import { createAssets } from '${ASSETS_PACKAGE_NAME}'`] : [],
           'export default {',
           ...(exportNamesSet.size ? [`  ${Array.from(exportNamesSet).map((name) => `${name}: undefined`).join(',\n  ')},`] : []),
           ...(hasNpm ? ['  Npm: { require: module.createRequire(import.meta.url) },'] : []),
           ...(hasModule ? ['  module: { id: import.meta.url },'] : []),
           ...(hasRequire ? ['  require: module.createRequire(import.meta.url),'] : []),
-          ...(hasAssets ? ['Assets'] : []),
+          ...(hasAssets ? ['   Assets: createAssets(import.meta.url),'] : []),
           '}',
         ].join('\n'),
       ));
@@ -974,7 +964,7 @@ export default class MeteorPackage {
   }
 
   // a mapping of [MeteorPackage.Type]: absoluteOutputDirectory
-  async #writeToNpmModule(outputParentFolderMapping) {
+  async #writeToNpmModule(outputParentFolderMapping, convertTests) {
     if (this.#cancelled || !this.#shouldBeWritten || this.#alreadyWritten) {
       return;
     }
@@ -990,11 +980,11 @@ export default class MeteorPackage {
       promises.push(this.#writeConvertedFiles(outputFolder));
       promises.push(this.#writeEntryPoints(outputFolder));
 
-      if (this.#hasTests) {
+      if (convertTests && this.#hasTests) {
         promises.push(this.#testPackage.#writeConvertedFiles(outputFolder));
         promises.push(this.#testPackage.#writeEntryPoints(outputFolder));
       }
-      promises.push(...this.#writeGlobalsAndModules(outputFolder));
+      promises.push(...this.#writeGlobalsAndModules(outputFolder, convertTests));
       promises.push(fsPromises.writeFile(
         `${outputFolder}/package.json`,
         JSON.stringify(this.toJSON(), null, 2),
@@ -1020,7 +1010,7 @@ export default class MeteorPackage {
     }));
   }
 
-  async #loadISOBuild(json, archName) {
+  async #loadISOBuild(json, archName, tmpDirName) {
     json.uses.forEach(({
       package: packageName,
       weak,
@@ -1036,6 +1026,10 @@ export default class MeteorPackage {
     }) => {
       this.addImplies([constraint ? `${packageName}@${constraint}` : packageName], [archName], { weak });
     });
+
+    // HACK - if the build has no web.browser.legacy we use client as the build name, but that path wont exist
+    const archToReplaceWith = archName;
+    const promises = [];
     json.resources.forEach(({
       path: aPath,
       file,
@@ -1058,7 +1052,7 @@ export default class MeteorPackage {
       }
       if ((type === 'source' || type === 'prelink') && actualPath.startsWith('/packages/')) {
         // NOTE: because archName is mapped from os -> server, this won't work for server files - edgecase
-        actualPath = actualPath.replace('/packages/', `/${archName}/`);
+        actualPath = actualPath.replace('/packages/', `/${archToReplaceWith}/`);
       }
       if (mainModule) {
         this.setMainModule(`./${actualPath}`, [archName], { lazy });
@@ -1066,8 +1060,16 @@ export default class MeteorPackage {
       else if ((type === 'source' || type === 'prelink') && !lazy) {
         this.addImport(`./${actualPath}`, [archName]);
       }
-      this.#isoResourcesToCopy.set(actualPath, file);
+      this.#isoResourcesToCopy.set(actualPath, actualPath);
+      promises.push(
+        ensureDir(path.join(tmpDirName, actualPath, '..'))
+          .then(() => fsPromises.copyFile(
+            path.join(this.#folderPath, file),
+            path.join(tmpDirName, actualPath),
+          )),
+      );
     });
+    await Promise.all(promises);
     if (json.node_modules) {
       const npmShrinkwrapJsonPath = path.join(this.#folderPath, json.node_modules, '.npm-shrinkwrap.json');
       if (await fs.pathExists(npmShrinkwrapJsonPath)) {
@@ -1134,10 +1136,14 @@ export default class MeteorPackage {
         webBrowserBuild.arch = 'client';
       }
     }
+    const { name: tmpDirName } = dirSync({
+      unsafeCleanup: true,
+    });
     await Promise.all(builds.map(async (build) => {
       const buildJson = JSON.parse((await fsPromises.readFile(path.join(fullFolder, build.path))).toString());
-      return this.#loadISOBuild(buildJson, supportedISOPackBuilds.get(build.arch));
+      return this.#loadISOBuild(buildJson, supportedISOPackBuilds.get(build.arch), tmpDirName);
     }));
+    this.#folderPath = tmpDirName;
   }
 
   async loadFromISOPack(fullFolder) {
@@ -1446,11 +1452,11 @@ export default class MeteorPackage {
     });
   }
 
-  async loadFromMeteorPackage(packageJsPath, packageType) {
+  async loadFromMeteorPackage(packageJsPath, packageType, convertTests) {
     try {
       await this.readDependenciesFromPacakgeJS(packageJsPath, packageType);
       await this.ensurePackages();
-      if (this.#hasTests) {
+      if (convertTests && this.#hasTests) {
         try {
           await this.#testPackage.ensurePackages();
         }

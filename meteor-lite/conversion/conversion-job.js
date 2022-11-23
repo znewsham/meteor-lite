@@ -13,7 +13,7 @@ import {
 } from '../helpers/helpers';
 import { warn } from '../helpers/log';
 import MeteorPackage, { TestSuffix } from './meteor-package';
-import { getNpmRc, registryForPackage } from '../helpers/ensure-npm-rc';
+import { extraOptionsForRegistry, getNpmRc, registryForPackage } from '../helpers/ensure-npm-rc';
 import ensureLocalPackage from '../helpers/ensure-local-package';
 import Catalog from './catalog';
 
@@ -52,10 +52,10 @@ export default class ConversionJob {
 
   #lock = new AsyncLock({ maxPending: Number.MAX_SAFE_INTEGER });
 
-  #testPackages;
-
   // when converting the initial set of packages, we don't have the packages necessary to perform version checking
   #checkVersions;
+
+  #convertTests = false;
 
   constructor({
     outputGeneralDirectory,
@@ -65,7 +65,7 @@ export default class ConversionJob {
     otherPackageFolders,
     forceRefresh,
     skipNonLocalIfPossible = true,
-    checkVesions = false,
+    checkVersions = false,
   }) {
     this.#outputGeneralDirectory = path.resolve(outputGeneralDirectory);
     this.#outputSharedDirectory = path.resolve(outputSharedDirectory || outputGeneralDirectory);
@@ -81,7 +81,7 @@ export default class ConversionJob {
     this.#meteorInstall = meteorInstall;
     this.#forceRefreshOptions = forceRefresh;
     this.#skipNonLocalIfPossible = skipNonLocalIfPossible;
-    this.#checkVersions = checkVesions;
+    this.#checkVersions = checkVersions;
   }
 
   #outputDirectories() {
@@ -98,7 +98,7 @@ export default class ConversionJob {
     await this.loadPackage(meteorPackage, meteorPackage.version);
     await meteorPackage.ensurePackageFullyLoaded();
     await meteorPackage.ensureTestPackageFullyLoaded();
-    await meteorPackage.writeToNpmModule(this.#outputDirectories());
+    await meteorPackage.writeToNpmModule(this.#outputDirectories(), this.#convertTests);
     return true;
   }
 
@@ -147,6 +147,9 @@ export default class ConversionJob {
   }
 
   async convertPackages(meteorNames, meteorNamesAndVersions) {
+    const testPackageNames = new Set(meteorNames
+      .filter((meteorName) => meteorName.endsWith(TestSuffix))
+      .map((meteorName) => meteorName.replace(TestSuffix, '')));
     let versionResult;
     if (this.#checkVersions) {
       const catalog = await this.#createCatalog();
@@ -161,10 +164,6 @@ export default class ConversionJob {
       // I think in the future we can just do a second pass on every package - but it's not obvious how to get around the above
       // not every package will provide test dependencies, and if we just give a static list to the constraint solver of "all these are test packages"
       // we'll end up with a circular reference between a package and itself (e.g., everytime you see X load X-test and X-test depends on X)
-      this.#testPackages = new Set(meteorNames
-        .filter((meteorName) => meteorName.endsWith(TestSuffix))
-        .map((meteorName) => meteorName.replace(TestSuffix, '')));
-
       Object.entries(versionResult.answer).forEach(([meteorName, version]) => {
         if (!meteorName.endsWith(TestSuffix)) {
           this.warmPackage(`${meteorName}@${version}`);
@@ -172,7 +171,6 @@ export default class ConversionJob {
       });
     }
     else {
-      this.#testPackages = new Set();
       meteorNames.filter((meteorName) => !meteorName.endsWith(TestSuffix)).forEach((meteorName) => this.warmPackage(meteorName));
     }
     const cleanNames = meteorNames
@@ -187,19 +185,23 @@ export default class ConversionJob {
 
     // a special package that does nothing. Useful for optional imports/exports
     cleanNames.push('noop@0.0.1');
+    cleanNames.push('assets@0.0.1');
     // first convert all the non-test packages so we know they're done, then we do all the test packages.
     // this should help with circular dependencies (a little)
     await Promise.all(cleanNames.map(async (nameAndMaybeVersion) => this.#convertPackage(nameAndMaybeVersion)));
-    await Promise.all(Array.from(this.getAll()).map(async (meteorPackage) => {
+    await Promise.all(Array.from(this.getAllLoaded()).map(async (meteorPackage) => {
       await meteorPackage.ensurePackageFullyLoaded();
-      await meteorPackage.ensureTestPackageFullyLoaded();
-      await meteorPackage.writeToNpmModule(this.#outputDirectories());
+      const underTest = testPackageNames.has(meteorPackage.meteorName);
+      if (underTest) {
+        await meteorPackage.ensureTestPackageFullyLoaded();
+      }
+      await meteorPackage.writeToNpmModule(this.#outputDirectories(), this.#convertTests);
     }));
   }
 
-  async #convertPackage(meteorNameAndMaybeVersionConstraint, convertTests = false) {
-    const [meteorName, maybeVersionConstraint] = meteorNameAndMaybeVersionConstraint.split('@');
-    const meteorPackage = this.warmPackage(meteorNameAndMaybeVersionConstraint) || (convertTests && this.#packageMap.get(meteorName));
+  async #convertPackage(meteorNameAndMaybeVersionConstraint) {
+    const [, maybeVersionConstraint] = meteorNameAndMaybeVersionConstraint.split('@');
+    const meteorPackage = this.warmPackage(meteorNameAndMaybeVersionConstraint);
     if (!meteorPackage) { // the package was already converted
       return false;
     }
@@ -225,13 +227,11 @@ export default class ConversionJob {
     if (this.#packageMap.has(meteorName) && this.#packageMap.get(meteorName).isFullyLoaded) {
       return undefined;
     }
-    const isTest = this.#testPackages.has(meteorName);
     const meteorPackage = new MeteorPackage({
       meteorName,
       versionConstraint: maybeVersionConstraint,
       isTest: false,
       job: this,
-      convertTestPackage: isTest,
     });
     this.#packageMap.set(meteorName, meteorPackage);
     return meteorPackage;
@@ -268,15 +268,21 @@ export default class ConversionJob {
       // For now it'll only happen if we've explicitly pushed, which will always be to a custom registry
       try {
         const packageSpec = maybeVersionConstraint ? `${nodeName}@${meteorVersionToSemver(maybeVersionConstraint)}` : nodeName;
+        const extraOptions = await extraOptionsForRegistry(registry, this.#npmrc);
         const options = {
           fullReadJson: true,
           fullMetadata: true,
           where: process.cwd(),
           registry,
+          ...extraOptions,
         };
         return await pacote.manifest(packageSpec, options);
       }
       catch (e) {
+        if (e.name === 'HttpErrorAuthUnknown') {
+          console.error(e);
+          process.exit();
+        }
         return false;
       }
     }
@@ -400,6 +406,7 @@ export default class ConversionJob {
       await meteorPackage.loadFromMeteorPackage(
         packageJsPathObject.packageJsPath,
         packageJsPathObject.type,
+        this.#convertTests,
       );
     }
     else {
@@ -462,7 +469,18 @@ export default class ConversionJob {
           }
         }
       }
-      await this.loadPackage(meteorPackage, maybeVersionConstraint || meteorPackage.versionConstraint);
+      try {
+        await this.loadPackage(meteorPackage, maybeVersionConstraint || meteorPackage.versionConstraint);
+      }
+      catch (e) {
+        // because when checkVersions = false we warm weak dependencies, and we try to load them here
+        // and because we set isFullyLoaded above - we need to unset it here or we'll wait forever for
+        // a missing, optional, package to be written
+        // this could probably be avoided by NOT loading weak dependencies and instead just warming them.
+        // then when something else depends on them, we load it.
+        meteorPackage.isFullyLoaded = false;
+        throw e;
+      }
       return meteorPackage;
     }
 
@@ -478,6 +496,12 @@ export default class ConversionJob {
   get(meteorNameAndMaybeVersionConstraint) {
     const [name] = meteorNameAndMaybeVersionConstraint.split('@');
     return this.#packageMap.get(name);
+  }
+
+  getAllLoaded() {
+    // when using the meteor version selector, it sometimes returns versions of packages that we never load
+    // not sure why - maybe because of plugins (it isn't because of weak)
+    return this.getAll().filter((meteorPackage) => meteorPackage.isFullyLoaded);
   }
 
   getAll() {

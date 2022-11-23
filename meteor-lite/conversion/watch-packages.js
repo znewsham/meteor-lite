@@ -49,7 +49,7 @@ class PackageWatcher {
 }
 
 export default function watchPackages(job, { watchAll = false } = {}) {
-  const packagesToWatch = watchAll ? job.getAll() : job.getAllLocal();
+  const packagesToWatch = watchAll ? job.getAllLoaded() : job.getAllLocal();
   packagesToWatch.forEach((meteorPackage) => {
     const watcher = new PackageWatcher(job, meteorPackage);
     watcher.watch();

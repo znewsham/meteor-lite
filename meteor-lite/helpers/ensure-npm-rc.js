@@ -24,10 +24,21 @@ export async function getNpmRc() {
 export async function registryForPackage(nodeName, npmRc) {
   if (nodeName.startsWith('@')) {
     const scope = nodeName.split('/')[0];
-    const registry = npmRc.get(`${scope}:registry`);
+    const registry = npmRc.get(`${scope}:registry`) || npmRc.get('registry');
     if (registry) {
       return registry;
     }
   }
   return undefined;
+}
+
+export async function extraOptionsForRegistry(registry, npmRc) {
+  const token = npmRc.get(`${registry.replace(/https:?/, '')}:_authToken`);
+  // annoyingly, while token is a valid option, it doesn't get passed to the npm registry properly
+  return token ? {
+    token,
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  } : {};
 }
