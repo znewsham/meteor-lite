@@ -216,23 +216,30 @@ program
 program
   .command('build')
   .requiredOption('-d, --directory <directory>', 'the output directory')
+  .requiredOption('-o, --packageDirs <packageDirs...>', 'the local output directories (e.g., npm-packages')
   .action(async ({
     directory,
+    packageDirs,
   }) => {
     await prodBuild({
       directory,
       archs: DefaultArchs,
+      packageDirs,
     });
   });
 
 program
   .command('write-peer-dependencies')
   .requiredOption('-o, --outputDirs <outputDirs...>', 'the local output directories (e.g., npm-packages')
+  .option('-t, --type <dependencyType>', 'dependencies peerDependencies or optionalDependencies')
+  .option('--no-use-peer', 'whether to use peer dependencies at all or just add to package.json',)
   // .option('-n, --name <name>', 'the name of the local module to use', 'meteor-peer-dependencies')
-  .action(async ({ outputDirs = [] }) => {
+  .action(async ({ outputDirs = [], type: dependencyType, usePeer }) => {
     await writePeerDependencies({
       name: 'meteor-peer-dependencies',
       localDirs: outputDirs,
+      dependenciesKey: dependencyType,
+      usePeer,
     });
   });
 

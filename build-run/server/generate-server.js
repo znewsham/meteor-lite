@@ -58,7 +58,7 @@ async function buildServer({
     }
 
     return fsExtra.ensureSymlink(
-      `${outputBuildFolder}/server/app/${packageJson.meteor.mainModule.server}`,
+      `./app/${packageJson.meteor.mainModule.server}`,
       `${outputBuildFolder}/server/entry.js`,
     );
   }

@@ -14,7 +14,6 @@ import lessPlugin from './less-plugin.js';
 import stubsPlugin from './stubs-plugin.js';
 import onStart from './start-plugin.js';
 import onEnd from './end-plugin.js';
-import Cache from '../cache.js';
 import addJsExtension from './add-js-extension';
 
 // can't actually be weak since `build` is new each time.
@@ -26,15 +25,16 @@ async function buildClient({
   isProduction,
   outputBuildFolder,
   appProcess,
+  cache,
 }) {
   const entryPoint = packageJson.meteor.mainModule[archName] || packageJson.meteor.mainModule.client;
   const outdir = `${outputBuildFolder}/${archName}`;
   let isInitial = true;
   const buildRoot = path.resolve('./');
-  const cacheDirectory = path.resolve(path.join(outputBuildFolder, 'cache'));
   const wasPaused = new Map();
-  const cache = new Cache(cacheDirectory);
-  await cache.init();
+  if (cache) {
+    await cache.init();
+  }
 
   // eslint-disable-next-line
   const build = await esbuild.build({
@@ -186,11 +186,12 @@ async function listAndMaybeCopyFilesInPublic({
   if (await fsExtra.pathExists('./public')) {
     const publicFiles = await listFilesInDir('./public');
     if (copyToDestination) {
-      await fsExtra.ensureDir(`${outputBuildFolder}/${archName}/app/`);
+      await fsExtra.ensureDir(`${outputBuildFolder}/app-public-assets/`);
       await Promise.all(publicFiles.map(async (fileOrFolder) => fsExtra.copy(
         fileOrFolder,
-        `${outputBuildFolder}/${archName}/app/${fileOrFolder.replace('public/', '')}`,
+        `${outputBuildFolder}/app-public-assets/${fileOrFolder.replace('public/', '')}`,
       )));
+      await fsExtra.ensureSymlink('../app-public-assets', `${outputBuildFolder}/${archName}/app`);
     }
     else {
       await fsExtra.ensureSymlink('./public', `${outputBuildFolder}/${archName}/app`);
@@ -234,6 +235,10 @@ async function writeProgramJSON(
     outputBuildFolder,
   } = {},
 ) {
+  const absoluteDirectory = path.resolve(path.join(
+    outputBuildFolder,
+    archName,
+  ));
   const assets = await linkOrCopyAssets({
     archName,
     packageJson,
@@ -259,7 +264,7 @@ async function writeProgramJSON(
       }
       return {
         file,
-        path: file.replace(path.join(outputBuildFolder.replace(/^\.\//, ''), archName) + "/", ''),
+        path: path.resolve(file).replace(absoluteDirectory, '').replace(/^\//, ''),
         where: 'client',
         type,
         cacheable: true,

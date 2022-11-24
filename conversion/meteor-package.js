@@ -941,7 +941,7 @@ export default class MeteorPackage {
     if (this.isCommon()) {
       promises.push(fsPromises.writeFile(
         `${outputFolder}/__globals.js`,
-        Array.from(exportNamesSet).map((name) => `module.exports.${name} = undefined;`).join('\n'),
+        Array.from(exportNamesSet).sort().map((name) => `module.exports.${name} = undefined;`).join('\n'),
       ));
     }
     else {
@@ -951,7 +951,7 @@ export default class MeteorPackage {
           ...(hasNpm || hasRequire ? ['import module from "#module";'] : []),
           ...hasAssets ? [`import { createAssets } from '${ASSETS_PACKAGE_NAME}'`] : [],
           'export default {',
-          ...(exportNamesSet.size ? [`  ${Array.from(exportNamesSet).map((name) => `${name}: undefined`).join(',\n  ')},`] : []),
+          ...(exportNamesSet.size ? [`  ${Array.from(exportNamesSet).sort().map((name) => `${name}: undefined`).join(',\n  ')},`] : []),
           ...(hasNpm ? ['  Npm: { require: module.createRequire(import.meta.url) },'] : []),
           ...(hasModule ? ['  module: { id: import.meta.url },'] : []),
           ...(hasRequire ? ['  require: module.createRequire(import.meta.url),'] : []),

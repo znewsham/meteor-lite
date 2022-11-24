@@ -33,6 +33,9 @@ export async function registryForPackage(nodeName, npmRc) {
 }
 
 export async function extraOptionsForRegistry(registry, npmRc) {
+  if (!registry) {
+    return {};
+  }
   const token = npmRc.get(`${registry.replace(/https:?/, '')}:_authToken`);
   // annoyingly, while token is a valid option, it doesn't get passed to the npm registry properly
   return token ? {

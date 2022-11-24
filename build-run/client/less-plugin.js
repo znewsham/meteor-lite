@@ -23,7 +23,9 @@ export default function lessPlugin(cache) {
               contents: '',
               loader: 'css',
             };
-            cache.set(filePath, '');
+            if (cache) {
+              cache.set(filePath, '');
+            }
             return res;
           }
           const result = await less.render((await fs.readFile(filePath)).toString('utf8'), {

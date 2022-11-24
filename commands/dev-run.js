@@ -6,6 +6,7 @@ import generateServer, { generateConfigJson } from '../build-run/server/generate
 import generateWebBrowser from '../build-run/client/generate-web-browser';
 import watchPackages from '../conversion/watch-packages';
 
+import Cache from '../build-run/cache.js';
 class AppProcess {
   #testMetadata;
 
@@ -150,6 +151,9 @@ export default async function run(
     watchPackages(job, { watchAll });
   }
 
+  const cacheDirectory = path.resolve(path.join(baseBuildFolder, 'cache'));
+  const cache = new Cache(cacheDirectory);
+
   let start = new Date().getTime();
   await Promise.all(archs.map((archName) => generateWebBrowser(
     archName,
@@ -157,6 +161,7 @@ export default async function run(
       appProcess,
       isProduction: false,
       outputBuildFolder: baseBuildFolder,
+      cache,
     },
   )));
   console.log('web browser', (new Date().getTime() - start) / 1000);
