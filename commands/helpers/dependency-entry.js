@@ -1,49 +1,69 @@
 import { warn } from '../../helpers/log';
+import { GlobalExportSymbol } from './command-helpers';
 
-const archsToConditions = {
+// YES Meteor.isProduction && Meteor.isDevelopment is technically relevant
+// if a package is prodOnly but exports a debugOnly export (stupid, but technically possible)
+const exportConditionsToCodeSnippet = {
+  production: 'Meteor.isProduction',
+  development: 'Meteor.isDevelopment',
+  testOnly: '(Meteor.isTest || Meteor.isAppTest)',
+  debugOnly: 'Meteor.isDevelopment',
+  prodOnly: 'Meteor.isProduction',
+
+  // these only work because the file will only be loaded on the client, otherwise we'd need a Meteor.isClient
   'web.browser': 'Meteor.isModern',
   'web.browser.legacy': '!Meteor.isModern',
+  'web.cordova': 'Meteor.isCordova',
 };
 
 export default function dependencyEntry({
   nodeName,
   isLazy,
+  // this will be true if a package is imported/implied by another prodOnly package
+  // in this case we must not even import the package
   onlyLoadIfProd,
+  onlyLoadIfDev,
+  // this will be true if a package is neither a direct dependency, nor an implied package of a direct dependency
+  // in this case we must import the package, but declare the exports
+  isIndirectDependency,
   importSuffix,
-  globalsMap,
   conditionalMap,
 }) {
   if (isLazy) {
     return `import "${nodeName}/__defineOnly.js";`;
   }
-  const globals = globalsMap.get(nodeName);
-  if (onlyLoadIfProd) {
-    warn(`prod-only package ${nodeName}, you need to add the correct conditional import yourself and add these if you expect the globals to be set. If you don't need the globals, no action is required`);
+  const conditionals = conditionalMap.get(nodeName);
+  if (onlyLoadIfProd || onlyLoadIfDev) {
+    if (onlyLoadIfDev) {
+      warn('conditionally imported package', nodeName);
+    }
     return {};
   }
-  const importName = onlyLoadIfProd ? `${nodeName.replace('@', '#').replace(/\//g, '_')}` : nodeName;
-  if ((!globals || !globals.size) && !conditionalMap.has(nodeName)) {
-    return { importToWrite: `import "${importName}";` };
+  if (!conditionals || !conditionals.size || isIndirectDependency) {
+    return { importToWrite: `import "${nodeName}";` };
   }
-  const imp = `import * as __package_${importSuffix} from "${importName}";`;
-  const conditionals = [];
-  if (conditionalMap.has(nodeName)) {
-    const conditionalsForPackage = conditionalMap.get(nodeName);
-    Array.from(conditionalsForPackage.entries()).forEach(([archName, exp]) => {
-      conditionals.push([
-        `if (${archsToConditions[archName]}) {`,
-        ...exp.map((global) => `globalThis.${global} = __package_${importSuffix}.${global}`),
-        '}',
-      ].join('\n'));
-    });
-  }
+  const imp = `import * as __package_${importSuffix} from "${nodeName}";`;
   return {
     importToWrite: imp,
-    globalToWrite: [
-      ...(onlyLoadIfProd ? ['if (Meteor.isProduction) {'] : []),
-      ...Array.from(globals).map((global) => `globalThis.${global} = __package_${importSuffix}.${global}`),
-      ...conditionals,
-      ...(onlyLoadIfProd ? ['}'] : []),
-    ].join('\n'),
+    globalToWrite: Array.from(conditionals.entries()).map(([condition, nameSet]) => {
+      const exportStrs = Array.from(nameSet).map((global) => `globalThis.${global} = __package_${importSuffix}.${global}`);
+      if (condition === GlobalExportSymbol) {
+        return exportStrs.join('\n');
+      }
+      const conditionalCodeString = condition.split('&&').map((conditionPart) => {
+        const subParts = conditionPart.split('||');
+        const str = subParts.map((subPart) => exportConditionsToCodeSnippet[subPart]).join(' || ');
+        if (subParts.length === 1) {
+          return str;
+        }
+        return `(${str})`;
+      }).join(' && ');
+
+      return [
+        `if (${conditionalCodeString}) {`,
+        ...exportStrs.map((str) => `  ${str}`),
+        '}',
+      ].join('\n');
+    }).join('\n'),
   };
 }

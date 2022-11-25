@@ -29,7 +29,6 @@ export default async function recurseMeteorNodePackages(
         fullReadJson: true,
         fullMetadata: true,
         where: process.cwd(),
-        ...(registry && { registry }),
         ...await extraOptionsForRegistry(registry, npmRc),
       };
       // TODO: figure out how/where to force these versions

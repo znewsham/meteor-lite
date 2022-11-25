@@ -12,18 +12,44 @@ git clone --branch make-compatible https://github.com/qualialabs/meteor
 cd ./meteor-lite && npm install
 
 # these are only required if you don't have access to the qualia verdaccio instance
-node --experimental-specifier-resolution=node runner.js convert-packages \
+runner.sh convert-packages \
   -d ../meteor/packages/ ../meteor/packages/non-core/ ../meteor/packages/deprecated/ ../blaze/packages/ \
   -o npm-packages \
   -p modern-browsers templating-tools inter-process-messaging package-version-parser constraint-solver
 
-node --experimental-specifier-resolution=node runner.js write-peer-dependencies \
+runner.sh write-peer-dependencies \
   -o npm-packages/ -t optionalDependencies
 
 npm install
 ```
 
-visit http://localhost:3000 and feast your eyes on your non-meteor meteor app. Try `collection.insert({...})` or `collection.findOne()` (literally `collection`), play with the counter button. Observer the websocket.
+From within a meteor app you can now run the following commands:
+```
+# convert all meteor packages to npm packages. If the module is available through NPM already (e.g., through a configured private NPM registry) it will be skipped and the remote version will be used
+METEOR_PACKAGE_DIRS=.common runner.sh convert-deps \
+  -d ../meteor/packages/ ../meteor/packages/non-core ../meteor/packages/deprecated/ ../blaze/packages/ \
+  -m /home/vagrant/share/meteor/.meteor/ \
+  -o npm-packages/ \
+  --outputLocalDirectory npm-packages-local \
+  --outputSharedDirectory npm-packages-shared \
+  -u
+
+# update package.json with the app dependencies and any local packages, write a meteor-peer-dependencies module with all other dependencies
+runner.sh write-peer-dependencies \
+  -o npm-packages npm-packages-local npm-packages-shared
+
+# if you don't already have a mainModule this will generate a server/main.js and client/main.js respectively
+runner.sh generate-main
+  -e server
+  -u
+
+runner.sh generate-main
+  -e client
+  -u
+
+# run the app in dev mode (non-minified)
+runner.sh dev-run
+```
 
 ## More details
 The meteor-lite project (and the runner.js file specifically) offer a few commands, all commands should be ran with `node --experimental-specifier-resolution=node`. If you install the binary you can just run `meteor-lite` and not worry about the options

@@ -88,7 +88,7 @@ program
   });
 
 program
-  .command('build-main')
+  .command('generate-main')
   .requiredOption('-e, --env <env>', 'which env (server or client)')
   .option('-u, --update', 'update the main.js file?')
   .action(async ({ env, update }) => {

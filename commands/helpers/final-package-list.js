@@ -61,6 +61,8 @@ function populateReturnList(nodeName, ret, loaded, written, chain = []) {
     nodeName,
     isLazy: deps.isLazy,
     onlyLoadIfProd: deps.isProdOnlyImplied,
+    onlyLoadIfDev: deps.isDevOnlyImplied,
+    isIndirectDependency: deps.isIndirectDependency,
     json: deps.json,
   });
   unorderedDeps.forEach((depNodeName) => {
@@ -75,12 +77,19 @@ function populateDependencies({
   dependenciesMap,
   archName,
 }) {
-  const { chainIsProdOnly } = state;
+  const { chainIsProdOnly, chainIsDevOnly, chainIsIndirectDependency } = state;
   if (dependenciesMap.has(nodeName)) {
     const existing = dependenciesMap.get(nodeName);
+    if (existing.isIndirectDependency && !chainIsIndirectDependency) {
+      existing.isIndirectDependency = false;
+    }
     if (existing.isProdOnlyImplied && !chainIsProdOnly) {
       // something not prod-only is requiring this.
       existing.isProdOnlyImplied = false;
+    }
+    if (existing.isDevOnlyImplied && !chainIsDevOnly) {
+      // something not prod-only is requiring this.
+      existing.isDevOnlyImplied = false;
     }
     // NOTE: version control here?
     // if we've pulled in a newer version we should replace?
@@ -89,7 +98,10 @@ function populateDependencies({
   }
   dependenciesMap.set(nodeName, {});
   const isProdOnly = !!json.exports?.['.']?.production;
+  const isDevOnly = !!json.exports?.['.']?.development;
   const isProdOnlyImplied = chainIsProdOnly;
+  const isDevOnlyImplied = chainIsDevOnly;
+  const isIndirectDependency = chainIsIndirectDependency;
   dependenciesMap.set(nodeName, {
     uses: json.meteorTmp.uses,
     strong: Object.keys(json.meteorTmp.dependencies || {}),
@@ -101,9 +113,16 @@ function populateDependencies({
     // we only care about storing 'implied' prod-only, this is because the prod only entry point of a package already handles this
     // butwe may need to hoist the packages dependencies (and still create globals)
     isProdOnlyImplied,
+    isDevOnlyImplied,
+    isIndirectDependency,
   });
   return [
-    ...json.meteorTmp.uses.map(({ name: depNodeName, constraint, weak, archs }) => {
+    ...json.meteorTmp.uses.map(({
+      name: depNodeName,
+      constraint,
+      weak,
+      archs,
+    }) => {
       if (weak) {
         return undefined;
       }
@@ -113,22 +132,41 @@ function populateDependencies({
       return {
         nodeName: depNodeName,
         version: constraint && meteorVersionToSemver(constraint),
-        newState: { ...state, chainIsProdOnly: chainIsProdOnly || isProdOnly },
+        newState: {
+          ...state,
+          chainIsProdOnly: chainIsProdOnly || isProdOnly,
+          chainIsDevOnly: chainIsDevOnly || isDevOnly,
+
+          // as soon as we dip into an api.uses call - that package's exports shouldn't be set as globals
+          chainIsIndirectDependency: true,
+        },
       };
     }).filter(Boolean),
-    ...(json.meteorTmp.implies?.filter(({ archs }) => !archs || archs.includes(archName)) || []).map(({ name: depNodeName, constraint, weak, archs }) => {
-      if (weak) {
-        return undefined;
-      }
-      if (archs && !archs.includes(archName)) {
-        return undefined;
-      }
-      return {
-        nodeName: depNodeName,
-        version: constraint && meteorVersionToSemver(constraint),
-        newState: { ...state, chainIsProdOnly: chainIsProdOnly || isProdOnly },
-      };
-    }).filter(Boolean),
+    ...(json.meteorTmp.implies?.filter(({ archs }) => !archs || archs.includes(archName)) || [])
+      .map(({
+        name: depNodeName,
+        constraint,
+        weak,
+        archs,
+      }) => {
+        if (weak) {
+          return undefined;
+        }
+        if (archs && !archs.includes(archName)) {
+          return undefined;
+        }
+        return {
+          nodeName: depNodeName,
+          version: constraint && meteorVersionToSemver(constraint),
+          newState: {
+            ...state,
+            chainIsProdOnly: chainIsProdOnly || isProdOnly,
+            chainIsDevOnly: chainIsDevOnly || isDevOnly,
+            chainIsIndirectDependency,
+          },
+        };
+      })
+      .filter(Boolean),
   ];
 }
 

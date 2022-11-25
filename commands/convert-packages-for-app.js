@@ -14,16 +14,23 @@ import dependencyEntry from './helpers/dependency-entry.js';
 // TODO: arch we shouldn't enforce that client lives in the client folder.
 // TODO: this is a mess, the combo of lazy, production and conditional (per-arch) exports
 export async function updateDependenciesForArch(nodePackagesVersionsAndExports, clientOrServer) {
-  const { map, conditionalMap } = generateGlobals(nodePackagesVersionsAndExports, clientOrServer);
+  const conditionalMap = generateGlobals(nodePackagesVersionsAndExports, clientOrServer);
 
   const importsToWrite = [];
   const globalsToWrite = [];
-  nodePackagesVersionsAndExports.forEach(({ nodeName, isLazy, onlyLoadIfProd }, i) => {
+  nodePackagesVersionsAndExports.forEach(({
+    nodeName,
+    isLazy,
+    onlyLoadIfProd,
+    onlyLoadIfDev,
+    isIndirectDependency,
+  }, i) => {
     const { importToWrite, globalToWrite } = dependencyEntry({
       nodeName,
       isLazy,
       onlyLoadIfProd,
-      globalsMap: map,
+      onlyLoadIfDev,
+      isIndirectDependency,
       conditionalMap,
       importSuffix: i,
     });

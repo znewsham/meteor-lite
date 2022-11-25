@@ -32,16 +32,22 @@ export async function registryForPackage(nodeName, npmRc) {
   return undefined;
 }
 
+export const packumentCache = new Map();
+
 export async function extraOptionsForRegistry(registry, npmRc) {
   if (!registry) {
-    return {};
+    return {
+      packumentCache,
+    };
   }
   const token = npmRc.get(`${registry.replace(/https:?/, '')}:_authToken`);
   // annoyingly, while token is a valid option, it doesn't get passed to the npm registry properly
   return token ? {
+    registry,
     token,
     headers: {
       Authorization: `Bearer ${token}`,
     },
+    packumentCache,
   } : {};
 }

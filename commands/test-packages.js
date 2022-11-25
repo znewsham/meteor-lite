@@ -1,5 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
+import tmp from 'tmp';
 import { generateGlobals } from './helpers/command-helpers';
 import { getFinalPackageListForArch } from './helpers/final-package-list';
 import { meteorNameToNodeName } from '../helpers/helpers';
@@ -7,7 +8,6 @@ import convertPackagesToNodeModulesForApp from './convert-packages-for-app';
 import npmInstall from './helpers/npm-install';
 import dependencyEntry from './helpers/dependency-entry';
 import writePeerDependencies from './write-peer-dependencies';
-import tmp from 'tmp';
 import { TestSuffix } from '../conversion/meteor-package';
 
 // it's possible these should just be handled by the existing extraPackages argument.
@@ -25,11 +25,19 @@ function dependenciesToString(nodePackagesVersionsAndExports, clientOrServer) {
 
   const importsToWrite = [];
   const globalsToWrite = [];
-  nodePackagesVersionsAndExports.forEach(({ nodeName, isLazy, onlyLoadIfProd }, i) => {
+  nodePackagesVersionsAndExports.forEach(({
+    nodeName,
+    isLazy,
+    onlyLoadIfProd,
+    onlyLoadIfDev,
+    isIndirectDependency,
+  }, i) => {
     const { importToWrite, globalToWrite } = dependencyEntry({
       nodeName,
       isLazy,
       onlyLoadIfProd,
+      onlyLoadIfDev,
+      isIndirectDependency,
       globalsMap: map,
       conditionalMap,
       importSuffix: i,
