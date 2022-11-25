@@ -65,13 +65,15 @@ const CommonJSPackageNames = new Set([
   'package-version-parser',
 ]);
 
+// TODO: modern actually maps to web.browser and server, legacy maps to web.browser.legacy and web.cordova
+// it's not super trivial to implement this (getArch and all places it uses will now potentially return an array)
 const SynonymArchs = new Map([
   ['legacy', 'web.browser.legacy'],
   ['modern', 'web.browser'],
 ]);
 
 // these are the ultimate leaf architectures we support - there is no such thing as a "client" build.
-const LeafArchs = [
+export const LeafArchs = [
   'web.browser.legacy',
   'web.browser',
   'web.cordova',
@@ -227,12 +229,17 @@ export default class MeteorPackage {
 
   #exportedGlobals;
 
+  #exports = new Map();
+
   #importOrder = 0;
+
+  #onlyRequiredByTest;
 
   constructor({
     meteorName,
     versionConstraint,
     isTest,
+    onlyRequiredByTest,
     job,
   }) {
     this.#meteorName = meteorName;
@@ -243,6 +250,9 @@ export default class MeteorPackage {
     this.#loadedPromise = new Promise((resolve) => {
       this.#loadedResolve = resolve;
     });
+    // under no circumstances should this be used. Currently it will (when building for production) load weak dependencies incorrectly
+    // this problem isn't resolvable - I've left this in place to remind the next person of that.
+    this.#onlyRequiredByTest = false; // !!onlyRequiredByTest;
     this.#job = job;
     this.#isTest = !!isTest;
     if (!isTest) {
@@ -289,6 +299,7 @@ export default class MeteorPackage {
         new MeteorArch(
           actualArchName,
           ParentArchs.has(actualArchName) ? this.getArch(ParentArchs.get(actualArchName)) : undefined,
+          this.#meteorName,
         ),
       );
     }
@@ -363,6 +374,14 @@ export default class MeteorPackage {
     return this.#isFullyLoaded;
   }
 
+  get onlyRequiredByTest() {
+    return this.#onlyRequiredByTest;
+  }
+
+  setRequiredByNonTest() {
+    this.#onlyRequiredByTest = true;
+  }
+
   // TODO: remove if possible
   get type() {
     return this.#type;
@@ -426,6 +445,7 @@ export default class MeteorPackage {
     prodOnly,
     testOnly,
     devOnly,
+    debugOnly,
   }) {
     this.#meteorName = name || this.#meteorName;
     this.#nodeName = MeteorPackage.meteorNameToNodeName(name || this.#meteorName);
@@ -435,7 +455,7 @@ export default class MeteorPackage {
     this.#version = version.replace('_', '-');
     this.#testPackage.#meteorName = `${this.#meteorName}${TestSuffix}`;
 
-    if ([prodOnly, devOnly, testOnly].filter(Boolean).length > 1) {
+    if ([prodOnly, devOnly, debugOnly, testOnly].filter(Boolean).length > 1) {
       throw new Error('Package can\'t be any combination of prod, dev or test only');
     }
 
@@ -445,15 +465,22 @@ export default class MeteorPackage {
     if (testOnly) {
       this.#exportCondition = 'test';
     }
-    if (devOnly) {
+    if (devOnly || debugOnly) {
       this.#exportCondition = 'development';
     }
   }
 
-  addExports(symbols, archNames) {
+  addExports(symbols, archNames, opts) {
     const actualArchs = this.getArchs(archNames);
     symbols.forEach((symbol) => {
+      if (!this.#exports.has(symbol)) {
+        this.#exports.set(symbol, {
+          archs: new Set(),
+          opts,
+        });
+      }
       actualArchs.forEach((arch) => {
+        this.#exports.get(symbol).archs.add(arch);
         arch.addExport(symbol);
       });
     });
@@ -635,10 +662,11 @@ export default class MeteorPackage {
   }
 
   toJSON() {
-    const exportedVars = (Object.fromEntries(this.getAllArchs().map((arch) => [
-      arch.archName,
-      arch.getExports(true),
-    ]).filter(([, values]) => values.length)));
+    const exportedVars = Array.from(this.#exports.entries()).map(([symbol, { archs, opts }]) => ({
+      name: symbol,
+      archs: Array.from(archs).map((arch) => arch.archName), // trying to be consistent with uses which is consistent with ISOPack
+      ...opts, // contains testOnly, debugOnly, prodOnly
+    }));
     return {
       name: this.#nodeName,
       version: this.#version && semver.coerce(this.#version).version,
@@ -873,10 +901,13 @@ export default class MeteorPackage {
   }
 
   async #writeConvertedFiles(outputFolder) {
-    return Promise.all(Array.from(this.#globalsByFile.keys()).map((file) => fsPromises.writeFile(
-      path.join(outputFolder, file),
-      this.#finalOutput.get(file),
-    )));
+    return Promise.all(Array.from(this.#globalsByFile.keys()).map((file) => {
+      const fullPath = path.join(outputFolder, file);
+      return fsPromises.writeFile(
+        fullPath,
+        this.#finalOutput.get(file),
+      );
+    }));
   }
 
   #getExportNameSet(convertTests) {
@@ -1124,6 +1155,7 @@ export default class MeteorPackage {
       version: isopack.version,
       prodOnly: isopack.prodOnly,
       devOnly: isopack.devOnly,
+      debugOnly: isopack.debugOnly,
       testOnly: isopack.testOnly,
     });
     const builds = isopack.builds.filter((build) => supportedISOPackBuilds.has(build.arch));
@@ -1156,6 +1188,7 @@ export default class MeteorPackage {
     this.#waitingWrite = (await Promise.all(
       Array.from(this.#strongDependencies).map((packageNameAndMaybeVersionConstraint) => this.#job.ensurePackage(
         packageNameAndMaybeVersionConstraint,
+        { fromTest: this.#isTest || this.#onlyRequiredByTest },
       )),
     )).filter(Boolean);
     this.#loadedResolve();
@@ -1171,6 +1204,7 @@ export default class MeteorPackage {
         try {
           return await this.#job.ensurePackage(
             packageNameAndMaybeVersionConstraint,
+            { fromTest: this.#isTest || this.#onlyRequiredByTest },
           );
         }
         catch (e) {
@@ -1182,6 +1216,7 @@ export default class MeteorPackage {
         try {
           return await this.#job.ensurePackage(
             packageNameAndMaybeVersionConstraint,
+            { fromTest: this.#isTest, optional: true },
           );
         }
         catch (e) {
@@ -1222,9 +1257,21 @@ export default class MeteorPackage {
       });
 
       if (packageJSON.meteorTmp?.exportedVars) {
-        Object.entries(packageJSON.meteorTmp.exportedVars).forEach(([arch, symbols]) => {
-          this.addExports(symbols, [arch]);
-        });
+        if (Array.isArray(packageJSON.meteorTmp.exportedVars)) {
+          packageJSON.meteorTmp.exportedVars.forEach(({
+            name,
+            archs,
+            ...opts // testOnly, debugOnly, prodOnly
+          }) => {
+            this.addExports([name], archs, opts);
+          });
+        }
+        else {
+          // deprecated
+          Object.entries(packageJSON.meteorTmp.exportedVars).forEach(([arch, symbols]) => {
+            this.addExports(symbols, [arch]);
+          });
+        }
       }
 
       if (packageJSON.meteorTmp?.implies) {
@@ -1403,6 +1450,7 @@ export default class MeteorPackage {
   async ensurePackageFullyLoaded() {
     await this.#ensureAllDependenciesLoaded();
     await this.#replacePackageGlobals();
+    await this.#ensureImpliedImportsAdded();
   }
 
   // this must be separate from ensureAllDependenciesLoaded because this is where the deadlock would occur
@@ -1452,6 +1500,30 @@ export default class MeteorPackage {
     });
   }
 
+  async #ensureImpliedImportsAdded() {
+    // next, find all the direct dependencies and see what they imply. Then add those to our dependencies
+    Object.keys(this.#meteorDependencies)
+      .forEach((dep) => {
+        const importedPackage = this.getDependency(MeteorPackage.nodeNameToMeteorName(dep));
+        if (!importedPackage) {
+          // was't a meteor package...
+          return;
+        }
+        // NOTE: this slightly odd expression handles the case where this package has a client leaf arch,
+        // but the imported package has web.* leaf archs
+        this.getActiveLeafArchs().forEach((arch) => {
+          const impliedSet = new Set([
+            ...importedPackage.getImplies(arch.archName),
+            ...Array.from(
+              Array.from(arch.getAllChildArchs())
+                .map((childArch) => Array.from(importedPackage.getImplies(childArch.archName))),
+            ).flat(),
+          ]);
+          impliedSet.forEach((meteorName) => this.addImport(meteorNameToNodeName(meteorName), [arch.archName]));
+        });
+      });
+  }
+
   async loadFromMeteorPackage(packageJsPath, packageType, convertTests) {
     try {
       await this.readDependenciesFromPacakgeJS(packageJsPath, packageType);
@@ -1461,6 +1533,8 @@ export default class MeteorPackage {
           await this.#testPackage.ensurePackages();
         }
         catch (e) {
+          this.#hasTests = false; // if we can't load the test package, we don't have tests.
+          this.#testPackage.#fullyLoadedWithDeps = true;
           e.message = `Test package problem: ${e.message}`;
           warn(e);
         }
@@ -1468,19 +1542,6 @@ export default class MeteorPackage {
       await this.#ensureFullyLoadedWithoutDeps();
       this.#isFullyLoaded = true;
       this.#shouldBeWritten = true;
-      // next, find all the direct dependencies and see what they imply. Then add those to our dependencies
-      Object.keys(this.#meteorDependencies)
-        .forEach((dep) => {
-          const importedPackage = this.getDependency(MeteorPackage.nodeNameToMeteorName(dep));
-          if (!importedPackage) {
-            // was't a meteor package...
-            return;
-          }
-          this.getAllArchs().forEach((arch) => {
-            const impliedSet = importedPackage.getImplies(arch.archName);
-            impliedSet.forEach((meteorName) => this.addImport(meteorNameToNodeName(meteorName), [arch.archName]));
-          });
-        });
     }
     catch (error) {
       error.message = `${this.#meteorName || this.#folderName}: ${error.message}`;

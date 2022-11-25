@@ -34,9 +34,6 @@ export default function dependencyEntry({
   }
   const conditionals = conditionalMap.get(nodeName);
   if (onlyLoadIfProd || onlyLoadIfDev) {
-    if (onlyLoadIfDev) {
-      warn('conditionally imported package', nodeName);
-    }
     return {};
   }
   if (!conditionals || !conditionals.size || isIndirectDependency) {

@@ -55,7 +55,13 @@ export default class ConversionJob {
   // when converting the initial set of packages, we don't have the packages necessary to perform version checking
   #checkVersions;
 
-  #convertTests = false;
+  // It would be great if this wasn't necessary - and in theory of we converted each package in turn
+  // e.g., we built each package with tests alone, then each package that depends on that, etc,
+  // then we built all packages an app depends on, this would work. Unfortunately, when running the conversion for prod
+  // also converting test packages will load weak dependencies of packages (because they're strong dependencies of the test package)
+  // after the conversion is complete it's impossible to tell why those weak deps were loaded - so they'll be included in the prod bundle
+  // incorrectly
+  #testPackageNames = new Set();
 
   constructor({
     outputGeneralDirectory,
@@ -98,7 +104,7 @@ export default class ConversionJob {
     await this.loadPackage(meteorPackage, meteorPackage.version);
     await meteorPackage.ensurePackageFullyLoaded();
     await meteorPackage.ensureTestPackageFullyLoaded();
-    await meteorPackage.writeToNpmModule(this.#outputDirectories(), this.#convertTests);
+    await meteorPackage.writeToNpmModule(this.#outputDirectories(), this.#testPackageNames.has(meteorPackage.meteorName));
     return true;
   }
 
@@ -147,7 +153,7 @@ export default class ConversionJob {
   }
 
   async convertPackages(meteorNames, meteorNamesAndVersions) {
-    const testPackageNames = new Set(meteorNames
+    this.#testPackageNames = new Set(meteorNames
       .filter((meteorName) => meteorName.endsWith(TestSuffix))
       .map((meteorName) => meteorName.replace(TestSuffix, '')));
     let versionResult;
@@ -191,11 +197,11 @@ export default class ConversionJob {
     await Promise.all(cleanNames.map(async (nameAndMaybeVersion) => this.#convertPackage(nameAndMaybeVersion)));
     await Promise.all(Array.from(this.getAllLoaded()).map(async (meteorPackage) => {
       await meteorPackage.ensurePackageFullyLoaded();
-      const underTest = testPackageNames.has(meteorPackage.meteorName);
+      const underTest = this.#testPackageNames.has(meteorPackage.meteorName);
       if (underTest) {
         await meteorPackage.ensureTestPackageFullyLoaded();
       }
-      await meteorPackage.writeToNpmModule(this.#outputDirectories(), this.#convertTests);
+      await meteorPackage.writeToNpmModule(this.#outputDirectories(), underTest);
     }));
   }
 
@@ -219,7 +225,7 @@ export default class ConversionJob {
     return true;
   }
 
-  warmPackage(meteorNameAndMaybeVersionConstraint) {
+  warmPackage(meteorNameAndMaybeVersionConstraint, fromTest) {
     const [meteorName, maybeVersionConstraint] = meteorNameAndMaybeVersionConstraint.split('@');
     if (ExcludePackageNames.has(meteorName)) {
       return undefined;
@@ -231,6 +237,7 @@ export default class ConversionJob {
       meteorName,
       versionConstraint: maybeVersionConstraint,
       isTest: false,
+      onlyRequiredByTest: fromTest,
       job: this,
     });
     this.#packageMap.set(meteorName, meteorPackage);
@@ -273,7 +280,6 @@ export default class ConversionJob {
           fullReadJson: true,
           fullMetadata: true,
           where: process.cwd(),
-          registry,
           ...extraOptions,
         };
         return await pacote.manifest(packageSpec, options);
@@ -406,7 +412,7 @@ export default class ConversionJob {
       await meteorPackage.loadFromMeteorPackage(
         packageJsPathObject.packageJsPath,
         packageJsPathObject.type,
-        this.#convertTests,
+        this.#testPackageNames.has(meteorPackage.meteorName),
       );
     }
     else {
@@ -428,18 +434,31 @@ export default class ConversionJob {
     return true;
   }
 
-  async ensurePackage(meteorNameAndMaybeVersionConstraint) {
+  // optional corresponds to weak, if #checkVersions is true, we don't care
+  // we just throw an error and the calling code will handle it correctly
+  // but if we've disabled #checkVersions (which in some cases forces us to use the latest version)
+  // we need to gracefully exit out of optional packages
+  // if we're loading the dependency from a test package - we loosen the restriction to only use warmed packages
+  async ensurePackage(meteorNameAndMaybeVersionConstraint, { optional = false, fromTest = false } = {}) {
     const [meteorName, maybeVersionConstraint] = meteorNameAndMaybeVersionConstraint.split('@');
     const versionToSatisfy = maybeVersionConstraint
       ? meteorVersionToSemver(maybeVersionConstraint)
       : undefined;
 
     let meteorPackage = this.#packageMap.get(meteorName);
-    if (!meteorPackage && this.#checkVersions) {
+    if (meteorPackage && meteorPackage.onlyRequiredByTest && !fromTest) {
+      // this shouldn't be possible
+      warn(`changed ${meteorPackage.meteorName} to be required from a meteor package`);
+      meteorPackage.setRequiredByNonTest();
+    }
+    if (!meteorPackage && this.#checkVersions && !fromTest) {
       throw new Error(`tried to load unresolved package ${meteorName}`);
     }
+    else if (!meteorPackage && optional) {
+      return false;
+    }
     else if (!meteorPackage) {
-      meteorPackage = this.warmPackage(meteorNameAndMaybeVersionConstraint);
+      meteorPackage = this.warmPackage(meteorNameAndMaybeVersionConstraint, fromTest);
     }
     if (maybeVersionConstraint && meteorPackage?.isFullyLoaded) {
       if (!meteorPackage.version) {

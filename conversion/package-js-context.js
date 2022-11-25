@@ -113,6 +113,7 @@ export default function packageJsContext(meteorPackage) {
           testOnly: description.testOnly,
           prodOnly: description.prodOnly,
           devOnly: description.devOnly,
+          debugOnly: description.debugOnly,
         });
       },
       registerBuildPlugin() {

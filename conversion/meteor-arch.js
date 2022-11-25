@@ -24,47 +24,66 @@ export default class MeteorArch {
 
   #modified = false;
 
-  constructor(archName, parentArch) {
+  // just to assist in debugging
+  #meteorPackageName;
+
+  constructor(archName, parentArch, meteorPackageName) {
     this.#archName = archName;
     this.#parentArch = parentArch;
+    this.#meteorPackageName = meteorPackageName;
     if (parentArch) {
       parentArch.#childArchs.add(this);
     }
   }
 
+  getChildArchs() {
+    return this.#childArchs;
+  }
+
+  getAllChildArchs() {
+    return new Set(Array.from(this.#childArchs).flatMap((childArch) => [
+      childArch,
+      ...childArch.getAllChildArchs(),
+    ]));
+  }
+
+  #setModified() {
+    this.#modified = true;
+  }
+
   addExport(symbol) {
     this.#exports.push(symbol);
-    this.#modified = true;
+    this.#setModified();
   }
 
   addAsset(file) {
     this.#assets.push(file);
-    this.#modified = true;
+    this.#setModified();
   }
 
   addImport(item, importOrder) {
     this.#imports.set(item, importOrder);
-    this.#modified = true;
+    this.#setModified();
   }
 
   addPreloadPackage(nodeName) {
     this.#preloadPackages.add(nodeName);
-    this.#modified = true;
+    this.#setModified();
   }
 
   addUnorderedPackage(nodeName) {
     this.#unorderedPackages.add(nodeName);
-    this.#modified = true;
+    this.#setModified();
   }
 
   addImpliedPackage(meteorName) {
     this.#impliedPackages.add(meteorName);
-    this.#modified = true;
+    this.#setModified();
   }
 
   setMainModule(filePath) {
     this.#mainModule = filePath;
-    this.#modified = true;
+    this.#setModified();
   }
 
   getPreloadPackages(justOwn = false) {

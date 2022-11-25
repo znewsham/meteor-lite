@@ -21,7 +21,7 @@ const staticImports = [
 ];
 
 function dependenciesToString(nodePackagesVersionsAndExports, clientOrServer) {
-  const { map, conditionalMap } = generateGlobals(nodePackagesVersionsAndExports, clientOrServer);
+  const conditionalMap = generateGlobals(nodePackagesVersionsAndExports, clientOrServer);
 
   const importsToWrite = [];
   const globalsToWrite = [];
@@ -38,7 +38,6 @@ function dependenciesToString(nodePackagesVersionsAndExports, clientOrServer) {
       onlyLoadIfProd,
       onlyLoadIfDev,
       isIndirectDependency,
-      globalsMap: map,
       conditionalMap,
       importSuffix: i,
     });
@@ -126,6 +125,7 @@ export default async function buildAppForTestPackages({
     meteorInstall: absoluteMeteorInstall,
     forceRefresh: new Set([...packages, ...extraPackages]),
   });
+  console.log('converted');
   allPackages = allPackages.map((meteorName) => (meteorName.endsWith(TestSuffix) ? meteorName.replace(TestSuffix, '') : meteorName));
 
   const underTestString = packages.map((packageName) => `import "${meteorNameToNodeName(packageName)}/__test.js";`).join('\n');
@@ -146,10 +146,13 @@ export default async function buildAppForTestPackages({
   ].filter(Boolean);
 
   await writePeerDependencies({ name: 'meteor-peer-dependencies', nodePackagesAndVersions, localDirs });
+  console.log('dependencies written');
   await npmInstall();
+  console.log('npm installed');
 
   const serverPackages = await getFinalPackageListForArch(nodePackagesAndVersions, 'server', localDirs);
   const clientPackages = await getFinalPackageListForArch(nodePackagesAndVersions, 'client', localDirs);
+  console.log('got final packages');
   await fs.writeFile(
     clientMain,
     `${dependenciesToString(clientPackages, 'client')}\n${underTestString}\nrunTests();`,
