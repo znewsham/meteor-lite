@@ -1086,10 +1086,10 @@ export default class MeteorPackage {
         actualPath = actualPath.replace('/packages/', `/${archToReplaceWith}/`);
       }
       if (mainModule) {
-        this.setMainModule(`./${actualPath}`, [archName], { lazy });
+        this.setMainModule(`.${actualPath.startsWith('/') ? '' : '/'}${actualPath}`, [archName], { lazy });
       }
       else if ((type === 'source' || type === 'prelink') && !lazy) {
-        this.addImport(`./${actualPath}`, [archName]);
+        this.addImport(`.${actualPath.startsWith('/') ? '' : '/'}${actualPath}`, [archName]);
       }
       this.#isoResourcesToCopy.set(actualPath, actualPath);
       promises.push(
@@ -1117,7 +1117,7 @@ export default class MeteorPackage {
         if (actualPath.startsWith('/packages/')) {
           actualPath = actualPath.replace('/packages/', `/${archName}/`);
         }
-        this.addImport(`./${actualPath}`, [archName]);
+        this.addImport(`.${actualPath.startsWith('/') ? '' : '/'}${actualPath}`, [archName]);
       });
 
     json.resources

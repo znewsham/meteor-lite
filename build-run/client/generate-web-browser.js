@@ -42,6 +42,7 @@ async function buildClient({
     minify: isProduction,
     entryPoints: [entryPoint],
     outdir,
+    preserveSymlinks: true,
     conditions: [isProduction ? 'production' : 'development', archName],
     external: [
       '*.jpg',
@@ -293,6 +294,7 @@ export default async function generateWebBrowser(
     appProcess,
     isProduction,
     outputBuildFolder,
+    cache,
   } = {},
 ) {
   const packageJson = await readPackageJson();
@@ -316,6 +318,7 @@ export default async function generateWebBrowser(
     isProduction,
     outputBuildFolder,
     appProcess,
+    cache,
   });
   await writeProgramJSON(
     archName,

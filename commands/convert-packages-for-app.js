@@ -103,29 +103,29 @@ export default async function convertPackagesToNodeModulesForApp({
   const actualPackages = appPackages
     .map((nameAndMaybeVersion) => nameAndMaybeVersion.split('@')[0])
     .filter((name) => job.has(name));
-  const packageJsonEntries = Object.fromEntries(await Promise.all(actualPackages.map(async (meteorName) => {
-    const outputDirectory = job.get(meteorName).outputParentFolder(outputFolderMapping);
-    const folderPath = path.join(outputDirectory, meteorNameToNodePackageDir(meteorName));
-    return [
-      meteorNameToNodeName(meteorName),
-      await fs.pathExists(folderPath) ? `file:${folderPath}` : job.get(meteorName).version,
-    ];
-  })));
-
-  const packageJson = JSON.parse((await fs.readFile('./package.json')).toString());
-  packageJson.dependencies = Object.fromEntries(Object.entries({
-    ...packageJson.dependencies,
-    ...packageJsonEntries,
-  }).sort(([a], [b]) => a.localeCompare(b)));
-
-  const localDirs = [
-    outputGeneralDirectory,
-    outputSharedDirectory,
-    outputLocalDirectory,
-  ].filter(Boolean);
-
-  await fs.writeFile('./package.json', JSON.stringify(packageJson, null, 2));
   if (updateDependencies) {
+    const packageJsonEntries = Object.fromEntries(await Promise.all(actualPackages.map(async (meteorName) => {
+      const outputDirectory = job.get(meteorName).outputParentFolder(outputFolderMapping);
+      const folderPath = path.join(outputDirectory, meteorNameToNodePackageDir(meteorName));
+      return [
+        meteorNameToNodeName(meteorName),
+        await fs.pathExists(folderPath) ? `file:${folderPath}` : job.get(meteorName).version,
+      ];
+    })));
+
+    const packageJson = JSON.parse((await fs.readFile('./package.json')).toString());
+    packageJson.dependencies = Object.fromEntries(Object.entries({
+      ...packageJson.dependencies,
+      ...packageJsonEntries,
+    }).sort(([a], [b]) => a.localeCompare(b)));
+
+    await fs.writeFile('./package.json', JSON.stringify(packageJson, null, 2));
+
+    const localDirs = [
+      outputGeneralDirectory,
+      outputSharedDirectory,
+      outputLocalDirectory,
+    ].filter(Boolean);
     await writePeerDependencies({ name: 'meteor-peer-dependencies', localDirs });
     const nodePackagesAndVersions = actualPackages.map((meteorName) => {
       const nodeName = meteorNameToNodeName(meteorName);

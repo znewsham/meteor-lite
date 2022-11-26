@@ -56,10 +56,9 @@ async function buildServer({
         }),
       });
     }
-
-    return fsExtra.ensureSymlink(
-      `./app/${packageJson.meteor.mainModule.server}`,
+    return fsExtra.writeFile(
       `${outputBuildFolder}/server/entry.js`,
+      `import './app/${packageJson.meteor.mainModule.server}';`,
     );
   }
   return fsExtra.ensureSymlink(`./${packageJson.meteor.mainModule.server}`, `${outputBuildFolder}/server/entry.js`);
@@ -127,6 +126,8 @@ export default async function generateServer(
       isProduction,
       outputBuildFolder,
     }),
+    // fsExtra.copy('./node_modules', `${outputBuildFolder}/server/node_modules`),
+    //fsExtra.copy('./package.json', `${outputBuildFolder}/server/package.json`),
     !isProduction ? fsExtra.ensureSymlink('./node_modules', `${outputBuildFolder}/server/node_modules`) : undefined,
     !isProduction ? fsExtra.ensureSymlink('./package.json', `${outputBuildFolder}/server/package.json`) : undefined,
   ]);

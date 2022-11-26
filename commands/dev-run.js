@@ -5,8 +5,8 @@ import { baseBuildFolder } from '../helpers/base-folder';
 import generateServer, { generateConfigJson } from '../build-run/server/generate-server';
 import generateWebBrowser from '../build-run/client/generate-web-browser';
 import watchPackages from '../conversion/watch-packages';
-
 import Cache from '../build-run/cache.js';
+
 class AppProcess {
   #testMetadata;
 
